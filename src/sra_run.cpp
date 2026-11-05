@@ -198,8 +198,12 @@ public:
 		}
 		if (current_ == nullptr || row < current_->start_id ||
 		    row >= current_->start_id + int64_t(current_->id_count)) {
-			current_ = &physical_->Index().Locate(row);
-			blob_ = DecodeBlob(physical_->ReadVdbBlob(*current_), physical_->Encoding(), type_);
+			// current_ names the decoded blob only once it is decoded, so a failed decode leaves
+			// no stale pairing behind.
+			const BlobLoc &loc = physical_->Index().Locate(row);
+			current_ = nullptr;
+			blob_ = DecodeBlob(physical_->ReadVdbBlob(loc), physical_->Encoding(), type_);
+			current_ = &loc;
 		}
 		size_t i = size_t(row - current_->start_id);
 		data = blob_.data.data();

@@ -67,8 +67,8 @@ private:
 };
 
 // A remote .sra read through many concurrent range requests. One HTTP stream from NCBI's S3
-// bucket delivers about 4 MB/s and 16-32 concurrent ranges 35-47 MB/s (localdocs/
-// sra_speed_check.md), so the file is fetched in fixed blocks by a pool of workers. A block read
+// bucket delivered about 4 MB/s and 16-32 concurrent ranges 35-47 MB/s (2026-11, a campus network;
+// docs/internals/sra-reader.md), so the file is fetched in fixed blocks by a pool of workers. A block read
 // on demand also queues the blocks after it, so each column a decoder walks through is fetched
 // ahead of it. Blocks stay cached up to a bound, least recently used (or fetched) first. The bound
 // must hold every reader's current and previous block and its read-ahead, or blocks are fetched
@@ -76,7 +76,7 @@ private:
 class SraPrefetchingSource : public SraByteSource {
 public:
 	struct Options {
-		// Measured on a 1.35 GB run from S3 (localdocs/sra_speed_check.md): 2 MiB blocks with 16
+		// Measured on a 1.35 GB run from S3 (docs/internals/sra-reader.md): 2 MiB blocks with 16
 		// of read-ahead kept 32 requests in flight and matched a plain parallel download; 4 MiB
 		// blocks with less read-ahead left half the workers idle.
 		size_t block_size = 2 << 20;
@@ -97,6 +97,7 @@ public:
 	size_t CachedBlocks() const;
 
 private:
+	void Stop();
 	struct State;
 	std::unique_ptr<State> state_;
 };

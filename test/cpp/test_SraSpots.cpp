@@ -229,6 +229,7 @@ TEST_CASE("Qualities above 93 are written as 93", "[sra]") {
 	Spot s = MakeSpot("AC", {0}, {2}, {BIO});
 	s.quality = {93, 120};
 	auto reads = Route(s, SplitMode::Spot);
+	REQUIRE(reads.size() == 1);
 	CHECK(reads[0].quality == std::vector<uint8_t> {93, 93});
 }
 

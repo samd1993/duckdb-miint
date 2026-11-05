@@ -1,5 +1,7 @@
 #include "sra_codecs.hpp"
 
+#include <cstdint>
+
 #include <zlib.h>
 
 #include <cstring>
@@ -8,11 +10,10 @@
 namespace miint {
 namespace sra {
 
-namespace {
-
-// Inflates raw deflate into exactly dsize bytes and reports how many input bytes the stream used.
-// The stream must end exactly there: a short or overlong stream is damage.
-size_t InflateExact(const uint8_t *src, size_t n, uint8_t *dst, size_t dsize, const char *what) {
+Inflated InflateRaw(const uint8_t *src, size_t n, uint8_t *dst, size_t dsize, const char *what) {
+	if (n > UINT32_MAX || dsize > UINT32_MAX) {
+		throw SraUnsupportedError(std::string(what) + " larger than 4 GiB");
+	}
 	z_stream zs {};
 	if (inflateInit2(&zs, -15) != Z_OK) {
 		throw SraFormatError(std::string("cannot start inflating ") + what);
@@ -22,14 +23,25 @@ size_t InflateExact(const uint8_t *src, size_t n, uint8_t *dst, size_t dsize, co
 	zs.next_out = dst;
 	zs.avail_out = uInt(dsize);
 	int rc = inflate(&zs, Z_FINISH);
-	size_t used = zs.total_in;
-	size_t produced = zs.total_out;
+	Inflated r {size_t(zs.total_in), size_t(zs.total_out)};
 	inflateEnd(&zs);
-	if (rc != Z_STREAM_END || produced != dsize) {
+	if (rc != Z_STREAM_END) {
+		throw SraFormatError(std::string(what) + " does not inflate");
+	}
+	return r;
+}
+
+namespace {
+
+// Inflates raw deflate into exactly dsize bytes and reports how many input bytes the stream used.
+// The stream must end exactly there: a short or overlong stream is damage.
+size_t InflateExact(const uint8_t *src, size_t n, uint8_t *dst, size_t dsize, const char *what) {
+	Inflated r = InflateRaw(src, n, dst, dsize, what);
+	if (r.produced != dsize) {
 		throw SraFormatError(std::string(what) + " does not inflate to the " + std::to_string(dsize) +
 		                     " bytes its header records");
 	}
-	return used;
+	return r.used;
 }
 
 // irzip's markers in the slope argument for delta-coded series (irzip.impl.h).
@@ -217,6 +229,8 @@ std::vector<uint8_t> Iunzip(const HeaderFrame &frame, const uint8_t *src, size_t
 	}
 }
 
+// The decoded elements are in host order for a little-endian host, which every target miint ships
+// is (x86_64, arm64, wasm32): a big-endian blob is swapped, a little-endian one is not.
 DecodedBlob DecodeBlob(VdbBlob blob, const std::string &encoding, ElementType type) {
 	DecodedBlob out;
 	Encoding enc = EncodingOf(encoding);
@@ -242,6 +256,10 @@ DecodedBlob DecodeBlob(VdbBlob blob, const std::string &encoding, ElementType ty
 				ByteSwap(out.data, type.bits / 8);
 			}
 		} else {
+			if (type.bits < 8) {
+				throw SraUnsupportedError("izip_encoding on a column of " + std::to_string(type.bits) +
+				                          "-bit elements");
+			}
 			if (frame.osize % (type.bits / 8) != 0) {
 				throw SraFormatError("an izip blob's size is not a whole number of elements");
 			}
@@ -254,9 +272,13 @@ DecodedBlob DecodeBlob(VdbBlob blob, const std::string &encoding, ElementType ty
 		throw SraFormatError("a blob does not decode to a whole number of elements");
 	}
 	out.elem_count = bits / type.bits;
-	if (blob.page_map.ElementsSpanned() > out.elem_count) {
-		throw SraFormatError("a blob's page map addresses " + std::to_string(blob.page_map.ElementsSpanned()) +
-		                     " elements but it decodes to " + std::to_string(out.elem_count));
+	// Checked per row, so an offset near 2^64 cannot wrap past the bound.
+	const PageMap &pm = blob.page_map;
+	for (size_t i = 0; i < pm.row_length.size(); i++) {
+		if (pm.data_offset[i] > out.elem_count || pm.row_length[i] > out.elem_count - pm.data_offset[i]) {
+			throw SraFormatError("a blob's page map addresses elements past the " + std::to_string(out.elem_count) +
+			                     " it decodes to");
+		}
 	}
 	out.page_map = std::move(blob.page_map);
 	return out;

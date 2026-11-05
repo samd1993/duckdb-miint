@@ -12,6 +12,14 @@ namespace sra {
 // reads (raw, zip_encoding, izip_encoding). Output is the column's stored elements in native
 // (little-endian) byte order.
 
+// Inflates a raw deflate stream (no zlib header) into dst, which holds dsize bytes. Throws
+// SraFormatError naming `what` unless the stream ends within dsize.
+struct Inflated {
+	size_t used;     // input bytes the stream took
+	size_t produced; // bytes written to dst
+};
+Inflated InflateRaw(const uint8_t *src, size_t n, uint8_t *dst, size_t dsize, const char *what);
+
 // zip_encoding: raw deflate. Version 1 inflates to the frame's osize bytes; version 2 also pops
 // the count of meaningful bits in the last byte. Returns the inflated bytes; out_bits receives
 // their length in bits.

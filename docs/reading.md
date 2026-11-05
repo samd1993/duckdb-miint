@@ -683,7 +683,7 @@ WHERE list_avg(qual1) >= 30;
 
 ### SRA
 
-Read NCBI SRA archives (`.sra` files) with `read_sra`. The rows are exactly what `fasterq-dump` writes for the same file: the same reads, bases, qualities, spot names and order. Rendering them back to FASTQ gives `fasterq-dump`'s files byte for byte. miint decodes the archive itself; it does not use or need the SRA Toolkit. To read runs straight from NCBI's cloud copy by accession, use [`read_ncbi_sra_sequences`](insdc_ncbi.md#read-sra-runs).
+Read NCBI SRA archives (`.sra` files) with `read_sra`. The SRA stores a run as *spots*: one spot is one sequenced fragment, with all its reads (both mates of a pair, plus any barcode or index reads). The rows are exactly what `fasterq-dump` writes for the same file: the same reads, bases, qualities, spot names and order. Rendering them back to FASTQ gives `fasterq-dump`'s files byte for byte. miint decodes the archive itself; it does not use or need the SRA Toolkit. To read runs straight from NCBI's cloud copy by accession, use [`read_ncbi_sra_sequences`](insdc_ncbi.md#read-sra-runs).
 
 **Basic example:**
 
@@ -700,7 +700,7 @@ SELECT * FROM read_sra('SRR4424282.sra');
 - `split` (VARCHAR, optional, default `'split_3'`): How reads are laid out, matching `fasterq-dump`'s modes
   - `'split_3'` (`--split-3`): one row per spot. A spot with two biological reads fills `sequence1`/`qual1` and `sequence2`/`qual2`; a spot with fewer (what `fasterq-dump` writes to its unpaired file) fills `sequence1` only. Technical reads (barcodes, indexes) are always skipped.
   - `'spot'` (`--split-spot`): one row per read, with its position in the spot in `read_number`
-- `include_technical` (BOOLEAN, optional, default false): With `split => 'spot'`, also return technical reads (`--include-technical`). Combined with `'split_3'` it is an error: `fasterq-dump` silently switches to another layout in that case.
+- `include_technical` (BOOLEAN, optional, default false): With `split => 'spot'`, also return technical reads (`--include-technical`). Combined with `'split_3'` it is an error: `fasterq-dump` switches to another layout in that case, with only a notice on stderr.
 - `include_filepath` (BOOLEAN, optional, default false): Add a `filepath` column
 
 **Output schema (matches `read_fastx`):**
@@ -721,11 +721,11 @@ SELECT * FROM read_sra('SRR4424282.sra');
 
 **What is read and what is refused:**
 
-Supported are unaligned runs in the table layouts current loaders write: Illumina, generic FASTQ (any platform, including PacBio and Nanopore runs loaded from FASTQ) and the `align:tbl:seq` layout of reads loaded from BAM or FASTQ without alignments. These cover nearly all public runs. Each other kind fails with an `InvalidInputException` saying what the run is, whether or not other files are being read:
+Supported are runs submitted as reads, without alignments: Illumina runs, runs loaded from FASTQ on any platform (PacBio and Nanopore included), and runs loaded from unaligned BAM. These cover nearly all public runs. Each other kind fails with an `InvalidInputException` saying what the run is, whether or not other files are being read:
 - cSRA: reads stored against alignments (a `PRIMARY_ALIGNMENT` table, or reads compressed against a reference)
 - SRA Lite (`.sralite`, or a run converted to it): original qualities removed
 - PacBio or Nanopore databases with a `CONSENSUS`, `ZMW_METRICS` or `PASSES` table
-- Older table layouts (e.g. 454, Ion Torrent, Helicos) and encodings no surveyed public run uses
+- Runs from older loaders (e.g. 454, Ion Torrent, Helicos), and storage features not seen in current public runs
 - Under `'split_3'`, a spot with more than two biological reads, which a paired row cannot hold: use `split => 'spot'`
 
 **Examples:**
@@ -745,7 +745,7 @@ COPY (SELECT * FROM read_sra('SRR4424282.sra')) TO 'SRR4424282_{ORIENTATION}.fas
 ```
 
 **Notes:**
-- The format was implemented from ncbi-vdb's sources and checked against `fasterq-dump` 3.4.1 (SRA Toolkit) on runs of every supported layout (`data/sra/README.md`). Cite the SRA as: Leinonen R, Sugawara H, Shumway M. The Sequence Read Archive. *Nucleic Acids Res.* 2011;39:D19–D21. doi:10.1093/nar/gkq1019
+- Cite the SRA as: Leinonen R, Sugawara H, Shumway M. The Sequence Read Archive. *Nucleic Acids Res.* 2011;39:D19–D21. doi:10.1093/nar/gkq1019
 
 ### mzML and mzXML
 

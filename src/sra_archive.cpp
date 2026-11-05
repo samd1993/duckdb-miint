@@ -129,11 +129,13 @@ KarArchive::KarArchive(std::shared_ptr<const SraByteSource> source) : source_(st
 			case 2: { // file
 				need(16);
 				entry.type = KarEntry::Type::File;
-				entry.offset = data_offset_ + LoadU64(p);
+				uint64_t relative = LoadU64(p);
 				entry.size = LoadU64(p + 8);
-				if (entry.offset > file_size || entry.size > file_size - entry.offset) {
+				// Compared before adding, so a huge offset cannot wrap into the file.
+				if (relative > file_size - data_offset_ || entry.size > file_size - data_offset_ - relative) {
 					throw SraFormatError("archive entry '" + entry.path + "' runs past the end of the file");
 				}
+				entry.offset = data_offset_ + relative;
 				break;
 			}
 			case 6: // empty file

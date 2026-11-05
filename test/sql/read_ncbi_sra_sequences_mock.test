@@ -96,6 +96,8 @@ SELECT count(*) FROM read_ncbi_sra_sequences(['SRR4424282', 'SRR4424282']);
 # Runs that cannot be read
 
 # One run of several missing from the bucket is skipped with a warning; the others are read.
+# Exactly one warning: units are claimed by several threads, but a run is opened, and skipped,
+# once. No earlier statement in this file skips a run.
 query I
 SELECT count(*) FROM read_ncbi_sra_sequences(['SRR4424282', 'SRR999999999']);
 ----

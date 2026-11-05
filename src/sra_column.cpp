@@ -1,5 +1,7 @@
 #include "sra_column.hpp"
 
+#include "sra_codecs.hpp"
+
 #include <zlib.h>
 
 #include <algorithm>
@@ -346,26 +348,6 @@ std::vector<HeaderFrame> ParseHeaders(const uint8_t *p, size_t len) {
 	return frames;
 }
 
-std::vector<uint8_t> InflateRaw(const uint8_t *p, size_t len, size_t limit) {
-	std::vector<uint8_t> out(limit);
-	z_stream zs {};
-	if (inflateInit2(&zs, -15) != Z_OK) {
-		throw SraFormatError("cannot start inflating a page map");
-	}
-	zs.next_in = const_cast<Bytef *>(p);
-	zs.avail_in = uInt(len);
-	zs.next_out = out.data();
-	zs.avail_out = uInt(out.size());
-	int rc = inflate(&zs, Z_FINISH);
-	size_t produced = zs.total_out;
-	inflateEnd(&zs);
-	if (rc != Z_STREAM_END) {
-		throw SraFormatError("a page map does not inflate");
-	}
-	out.resize(produced);
-	return out;
-}
-
 // A page map tells, per row of a blob, how many elements the row has and where they start in the
 // decoded data. Rows of equal length come as (length, run) pairs; consecutive rows sharing one
 // stored record as data runs; version 2 instead records each row's offset ("random access").
@@ -404,7 +386,8 @@ PageMap ParsePageMap(const uint8_t *src, size_t len, uint64_t row_count) {
 	const uint8_t *body = src + pos;
 	size_t body_len = len - pos;
 	if (version >= 1 && values > 0) {
-		inflated = InflateRaw(body, body_len, size_t(values) * 10 + 16);
+		inflated.resize(size_t(values) * 10 + 16);
+		inflated.resize(InflateRaw(body, body_len, inflated.data(), inflated.size(), "a page map").produced);
 		body = inflated.data();
 		body_len = inflated.size();
 	}

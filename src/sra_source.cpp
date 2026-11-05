@@ -172,9 +172,10 @@ struct SraPrefetchingSource::State {
 			guard.unlock();
 			uint64_t pos = b * options.block_size;
 			size_t n = size_t(std::min<uint64_t>(options.block_size, size - pos));
-			std::vector<uint8_t> data(n);
+			std::vector<uint8_t> data;
 			std::exception_ptr error;
 			try {
+				data.resize(n); // inside the try: a failed allocation is this block's error
 				backend->ReadAt(pos, data.data(), n);
 			} catch (...) {
 				error = std::current_exception();
@@ -199,12 +200,19 @@ SraPrefetchingSource::SraPrefetchingSource(std::shared_ptr<const SraByteSource> 
 	st.options = options;
 	st.size = st.backend->Size();
 	st.block_count = (st.size + options.block_size - 1) / options.block_size;
-	for (size_t i = 0; i < options.fetch_threads; i++) {
-		st.workers.emplace_back([&st] { st.Work(); });
+	try {
+		for (size_t i = 0; i < options.fetch_threads; i++) {
+			st.workers.emplace_back([&st] { st.Work(); });
+		}
+	} catch (...) {
+		// The destructor does not run for a constructor that throws, and a joinable thread's
+		// destruction terminates the process: stop the threads already started.
+		Stop();
+		throw;
 	}
 }
 
-SraPrefetchingSource::~SraPrefetchingSource() {
+void SraPrefetchingSource::Stop() {
 	{
 		std::lock_guard<std::mutex> guard(state_->lock);
 		state_->stopping = true;
@@ -214,6 +222,11 @@ SraPrefetchingSource::~SraPrefetchingSource() {
 	for (auto &w : state_->workers) {
 		w.join();
 	}
+	state_->workers.clear();
+}
+
+SraPrefetchingSource::~SraPrefetchingSource() {
+	Stop();
 }
 
 uint64_t SraPrefetchingSource::Size() const {
@@ -262,7 +275,7 @@ void SraPrefetchingSource::Prefetch(uint64_t pos, uint64_t n) const {
 	if (n == 0 || pos >= st.size) {
 		return;
 	}
-	uint64_t last = std::min<uint64_t>(pos + n, st.size) - 1;
+	uint64_t last = pos + std::min<uint64_t>(n, st.size - pos) - 1; // no pos + n: it can wrap
 	std::lock_guard<std::mutex> guard(st.lock);
 	for (uint64_t b = pos / st.options.block_size; b <= last / st.options.block_size; b++) {
 		if (!st.Ensure(b, false)) {

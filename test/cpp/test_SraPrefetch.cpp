@@ -17,7 +17,7 @@
 
 using namespace miint::sra;
 
-// The prefetching source is what makes reading a run from S3 fast (localdocs/sra_speed_check.md):
+// The prefetching source is what makes reading a run from S3 fast (many range requests in flight):
 // it must return exactly the backend's bytes, keep several ranges in flight ahead of a reader,
 // bound its memory, and surface a failed fetch to the reader that needed it.
 
@@ -60,6 +60,11 @@ public:
 	}
 	int MaxInFlight() const {
 		return max_in_flight_;
+	}
+	int FetchesOf(uint64_t pos) const {
+		std::lock_guard<std::mutex> g(lock_);
+		auto it = fetches_.find(pos);
+		return it == fetches_.end() ? 0 : it->second;
 	}
 	int MostFetchesOfOneRange() const {
 		std::lock_guard<std::mutex> g(lock_);
@@ -160,6 +165,7 @@ TEST_CASE("SraPrefetchingSource keeps no more blocks than it may", "[sra]") {
 		REQUIRE(src.CachedBlocks() <= 6);
 	}
 	CHECK(backend->Offsets().size() == 100);
+	CHECK(backend->MostFetchesOfOneRange() == 1);
 }
 
 TEST_CASE("SraPrefetchingSource keeps blocks fetched ahead until their readers arrive", "[sra]") {
@@ -235,6 +241,7 @@ TEST_CASE("SraPrefetchingSource fetches again a block whose read-ahead failed", 
 	backend->fail_at_ = -1;
 	src.ReadAt(3400, buf.data(), buf.size());
 	CHECK(std::equal(buf.begin(), buf.end(), backend->Bytes().begin() + 3400));
+	CHECK(backend->FetchesOf(3000) == 2); // the failed read-ahead, then the reader's own fetch
 }
 
 TEST_CASE("SraPrefetchingSource can be destroyed with fetches in flight", "[sra]") {

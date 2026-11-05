@@ -202,3 +202,29 @@ TEST_CASE("DecodeBlob byte-swaps an unencoded big-endian payload of wide element
 	DecodedBlob d = DecodeBlob(blob, "", U32);
 	CHECK(As<uint32_t>(d.data) == std::vector<uint32_t> {0x0102});
 }
+
+TEST_CASE("DecodeBlob refuses a page map addressing past the decoded elements", "[sra]") {
+	// Offsets come from the file. One near 2^64 plus its row's length wraps to a small number, so
+	// each row is checked on its own: a wrapped sum must not pass the bound.
+	VdbBlob blob;
+	blob.bytes = {7, 8, 9};
+	blob.payload_bits = 24;
+	blob.page_map.row_length = {3, 2};
+	blob.page_map.data_offset = {0, UINT64_MAX - 1};
+	CHECK(ThrowsTypeMentioning<SraFormatError>([&] { DecodeBlob(blob, "", ElementType {8, false}); }, "page map"));
+	blob.page_map.data_offset = {0, 2};
+	CHECK(ThrowsTypeMentioning<SraFormatError>([&] { DecodeBlob(blob, "", ElementType {8, false}); }, "page map"));
+}
+
+TEST_CASE("DecodeBlob refuses izip on elements narrower than a byte", "[sra]") {
+	// izip encodes whole integers; a 2na column claiming it is refused, not divided by zero.
+	VdbBlob blob;
+	blob.bytes = {0};
+	blob.payload_bits = 8;
+	blob.frames = {IzipFrame(2, 1, {0, 0})};
+	blob.frames[0].osize = 1;
+	blob.page_map.row_length = {4};
+	blob.page_map.data_offset = {0};
+	CHECK(ThrowsTypeMentioning<SraUnsupportedError>(
+	    [&] { DecodeBlob(blob, "izip_encoding#1", ElementTypeOf("INSDC:2na:packed")); }, "2-bit"));
+}

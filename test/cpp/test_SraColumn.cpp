@@ -148,6 +148,7 @@ TEST_CASE("PhysicalColumn reads a column's type, encoding and index", "[sra]") {
 TEST_CASE("A v1 blob gives every row the fixed length its header records", "[sra]") {
 	SraTable t(OpenSraFixture("SRR4424282.sra"));
 	PhysicalColumn read(t, "READ");
+	REQUIRE_FALSE(read.Index().blobs.empty());
 	VdbBlob blob = read.ReadVdbBlob(read.Index().blobs[0]);
 	CHECK(blob.frames.empty());
 	CHECK(blob.big_endian);
@@ -163,6 +164,7 @@ TEST_CASE("A v2 blob's page map shares one record among repeated rows", "[sra]")
 	// so only 132 records follow. Rows must map onto records, not onto 148 slots.
 	SraTable t(OpenSraFixture("ERR932865.sra"));
 	PhysicalColumn read(t, "READ");
+	REQUIRE_FALSE(read.Index().blobs.empty());
 	VdbBlob blob = read.ReadVdbBlob(read.Index().blobs[0]);
 	REQUIRE(blob.page_map.row_length.size() == 148);
 	CHECK(blob.page_map.data_offset[0] == 0);
@@ -212,6 +214,7 @@ TEST_CASE("ReadBlob rejects a blob whose CRC32 does not match", "[sra]") {
 	bytes[2612 + 10] ^= 0x01;
 	SraTable t(SraArchiveFromBytes(bytes));
 	PhysicalColumn read(t, "READ");
+	REQUIRE_FALSE(read.Index().blobs.empty());
 	CHECK(ThrowsTypeMentioning<SraFormatError>([&] { read.ReadBlob(read.Index().blobs[0]); }, "checksum"));
 }
 

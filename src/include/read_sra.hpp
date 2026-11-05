@@ -49,7 +49,8 @@ public:
 	static void Register(ExtensionLoader &loader);
 
 	// The run object's URL. MIINT_SRA_RUN_URL_TEMPLATE overrides the bucket ({acc} is replaced),
-	// which the tests point at a local range-serving server.
+	// which the tests point at a local range-serving server. Throws InvalidInputException unless
+	// the accession is a run accession.
 	static std::string RunUrl(const std::string &accession);
 };
 

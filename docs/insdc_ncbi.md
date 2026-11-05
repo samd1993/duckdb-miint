@@ -276,10 +276,10 @@ Read sequencing runs from the SRA's public copy on AWS (the `sra-pub-run-odp` bu
 
 **Behavior:**
 - Runs are returned in the order given, spots in order, decoded in parallel
-- A run that cannot be opened (absent from the bucket, or a network failure) fails the query when it is the only run asked for. With several, it is skipped with a warning in `miint_warnings()`, and the query fails only if every run fails, as in `read_ena_sequences`. A run that fails partway through, after its first rows were returned, fails the query, naming the run
+- A run that cannot be opened (absent from the bucket, or a network failure) fails the query when it is the only run asked for. With several, it is skipped with a warning in `miint_warnings()`, and the query fails only if every run fails, as in `read_ena_sequences` (which also retries a failed run once; this function does not). A run that fails partway through, after its first rows were returned, fails the query, naming the run
 - A run of a kind miint does not read (cSRA, SRA Lite, PacBio or Nanopore consensus databases; see [`read_sra`](reading.md#sra)) or a damaged run always fails the query, naming the run
-- Throughput comes from concurrency: up to 32 range requests in flight per run, with read-ahead cached in memory (about 72 MB per DuckDB thread, at most 1 GiB, outside DuckDB's `memory_limit`). On a campus network a 1.35 GB run (20 million read pairs) was read into a table in about 28 s, close to a bare parallel download of the same file, and several times faster than downloading it and running `fasterq-dump`
-- A `LIMIT` or `max_execution_time` stops the scan, and the requests queued for it are dropped; requests already in flight finish first, so a `LIMIT` on a large run still fetches the first work units (about 100 MB on that run)
+- Throughput comes from concurrency: up to 32 range requests in flight per run, with read-ahead cached in memory (about 72 MB per DuckDB thread, at most 1 GiB, outside DuckDB's `memory_limit`). A run is read about as fast as the file itself downloads
+- A `LIMIT` or `max_execution_time` stops the scan, and the requests queued for it are dropped; requests already in flight finish first, so a `LIMIT` on a large run still fetches the first part of each thread's share of it (about 100 MB of a 1.35 GB run)
 
 **Examples:**
 ```sql
@@ -298,8 +298,8 @@ COPY (SELECT * FROM read_ncbi_sra_sequences('SRR7761321')) TO 'SRR7761321.parque
 ```
 
 **Notes:**
-- `read_ena_sequences` reads the same runs as FASTQ from ENA. It also returns sample and experiment accessions and resolves studies to their runs. `read_ncbi_sra_sequences` returns `fasterq-dump`'s output, and is often much faster because it reads the smaller `.sra` object with many requests at once.
-- The `MIINT_SRA_RUN_URL_TEMPLATE` environment variable replaces the bucket URL, with `{acc}` standing for the run (default `https://sra-pub-run-odp.s3.amazonaws.com/sra/{acc}/{acc}`); the test suite uses it to serve fixtures locally.
+- `read_ena_sequences` reads the same runs as FASTQ from ENA. It also returns sample and experiment accessions and resolves studies to their runs. `read_ncbi_sra_sequences` returns `fasterq-dump`'s output, and is often faster because it reads the smaller `.sra` object with many requests at once.
+- The `MIINT_SRA_RUN_URL_TEMPLATE` environment variable replaces the bucket URL, with `{acc}` standing for the run (default `https://sra-pub-run-odp.s3.amazonaws.com/sra/{acc}/{acc}`), for example to read from a mirror.
 
 ## Taxonomy
 

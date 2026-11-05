@@ -15,8 +15,8 @@ using miint_test::ThrowsTypeMentioning;
 
 // fasterq-dump prints each spot's name ($sn), and the oracles hold it byte for byte. Names are
 // rebuilt from a format and the spot's coordinates; the format comes from the run's skey index.
-// Expected keys below were read from the fixtures with an independent prototype, whose every
-// name agreed with the oracles (data/sra/README.md).
+// Expected keys below were read from the fixtures by a separate implementation of the index format
+// (a script, not committed), whose names for every spot of 13 fixtures agreed with the oracles.
 
 namespace {
 SkeyIndex IndexOf(const std::string &run) {

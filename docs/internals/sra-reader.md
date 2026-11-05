@@ -1,7 +1,8 @@
 # The SRA reader
 
 `read_sra` and `read_ncbi_sra_sequences` (`src/read_sra.cpp`) share one decoder for NCBI's SRA
-archives, written from the format: no NCBI code is linked or vendored (`THIRD_PARTY_LICENSES.md`).
+archives, an independent implementation written from the format, with NCBI's public-domain sources
+read as its reference: no NCBI code is copied, linked or vendored (`THIRD_PARTY_LICENSES.md`).
 Its contract is `fasterq-dump`'s output, byte for byte, and the tests hold it to committed oracles
 that are never edited (`data/sra/README.md`).
 
@@ -14,10 +15,10 @@ the format can be tested against fixtures without a database.
 |---|---|
 | `sra_source` | `SraByteSource`: positional reads from a file, memory, or (in `read_sra.cpp`) a DuckDB `FileHandle`. `SraPrefetchingSource` wraps a remote one: fixed blocks fetched by a pool of threads, read-ahead, and an LRU cache, so one reader keeps many range requests in flight. |
 | `sra_archive` | The KAR container (header and table of contents), a KDB database or bare table inside it, the `md/cur` metadata tree, and static columns, whose single value is kept in metadata. |
-| `sra_column` | A physical column: its index (`idx`, the `idx0` journal, `idx1`/`idx2` block types), blob location, checksums (CRC32 or MD5, always verified), and the VDB blob framing: headers and page maps that give each row's length. |
-| `sra_codecs` | Column encodings: `zip` (deflate), `izip`/`irzip` (integer planes with delta and two-series modes), and the 2na and 4na base packings. |
+| `sra_column` | A physical column: its index (`idx`, the `idx0` journal, `idx1`/`idx2` block types), blob location, CRC32 blob checksums (always verified; MD5 blob checksums, which no public run in the survey used, are refused), and the VDB blob framing: headers and page maps that give each row's length. |
+| `sra_codecs` | Column encodings: `zip` (deflate) and `izip`/`irzip` (integer planes with delta and two-series modes). |
 | `sra_name` | Spot names: the `skey` text index (a persisted trie with a projection from rows to keys) and `format_spot_name`. |
-| `sra_run` | Classification (which runs are read, and the message for each kind refused), `SpotReader` (the logical columns as the run's schema defines them, spot by spot, with `fasterq-dump`'s checks), and routing (`RouteSpot`, `RowsForSpot`: which reads `fasterq-dump` writes and where). |
+| `sra_run` | Classification (which runs are read, and the message for each kind refused), `SpotReader` (the logical columns as the run's schema defines them, spot by spot, with `fasterq-dump`'s checks; this is where 2na bases are unpacked and ORed with 4na `ALTREAD`), and routing (`RouteSpot`, `RowsForSpot`: which reads `fasterq-dump` writes and where). |
 
 `src/read_sra.cpp` is the DuckDB layer: binding, the work-unit queue (`GlobalState::Claim`), the
 run-failure policy shared with `read_ena_sequences`, and filling the output vectors.
@@ -41,6 +42,22 @@ run-failure policy shared with `read_ena_sequences`, and filling the output vect
   a cache sized from DuckDB's thread count. A claimed unit's blobs, and the next unit's, are hinted
   to the source as soon as it is claimed. Destroying the source drops its queue and waits only for
   requests in flight, which is what stops a `LIMIT`.
+- **Fetch threads are not decode threads.** The 32 fetch threads per remote run are fixed, whatever
+  DuckDB's `threads` is: one stream from the bucket gave about 4 MB/s and 16-32 concurrent ranges
+  35-47 MB/s, so even a single decoding thread needs many requests in flight. While threads move
+  from one run to the next, two runs' pools can be alive at once. A WASM build without threads
+  reads ranges directly instead.
+- **The name index is shared.** Each decoding thread has its own `SpotReader`, but a run's `skey`
+  index (tens of bytes per spot when a loader stores whole names) is read once and shared through
+  `share_from`; `SkeyIndex` is immutable after construction for that reason.
+
+## Measurements
+
+On 2026-11-04/05, on a campus network, SRR7761321 (1.35 GB `.sra`, 20.25 million spots):
+`CREATE TABLE ... AS SELECT * FROM read_ncbi_sra_sequences('SRR7761321')` took 28-37 s with 8
+threads, against 23-32 s for a bare 32-way parallel download of the object, about 161 s for that
+download plus `fasterq-dump`, and about 27 minutes for ENA's FASTQ that day. `read_sra` on the
+local file took 6-8 s. `LIMIT 10` returned in about 6 s, having received about 110 MB.
 
 ## Tests
 
