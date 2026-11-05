@@ -47,6 +47,10 @@ struct Spot {
 	std::vector<uint32_t> read_len;
 	std::vector<uint8_t> read_type; // empty when the table has no READ_TYPE column
 	bool has_read_type = false;
+	// The spot's name ($sn); has_name is false when the table has no way to name spots, and
+	// fasterq-dump then leaves the name out of its deflines.
+	bool has_name = false;
+	std::string name;
 };
 
 // Reads spots of a classified run. The logical columns are taken the way the run's schema
@@ -88,6 +92,8 @@ struct SraRead {
 	int64_t spot = 0;             // $si
 	uint32_t read_number = 0;     // $ri: the read's position in its spot, 1-based
 	uint32_t destination = 0;     // 0: the unpaired (or only) file; n: file _n
+	bool has_name = false;        // the spot's
+	std::string name;             // $sn
 	std::string bases;            // $rl is its length
 	std::vector<uint8_t> quality; // phred, capped at 93 as fasterq-dump prints it ('~')
 };

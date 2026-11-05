@@ -430,12 +430,15 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 	const idx_t n = rows.size();
 	const std::string &acc = ls.unit.run->accession;
 	auto seq_index = FlatVector::GetDataMutable<int64_t>(output.data[0]);
-	std::vector<std::string> read_ids(n), seq1(n), seq2(n);
+	std::vector<std::string> read_ids(n), comments(n), seq1(n), seq2(n);
 	std::vector<const std::vector<uint8_t> *> qual1(n), qual2(n);
 	for (idx_t i = 0; i < n; i++) {
 		const SraRow &r = rows[i];
 		seq_index[i] = r.spot;
 		read_ids[i] = acc + "." + std::to_string(r.spot);
+		// fasterq-dump's defline continues "$sn length=$rl"; read_fastx keeps read 1's.
+		comments[i] = r.read1.has_name ? r.read1.name + " " : std::string();
+		comments[i] += "length=" + std::to_string(r.read1.bases.size());
 		seq1[i] = r.read1.bases;
 		qual1[i] = &r.read1.quality;
 		if (r.paired) {
@@ -445,7 +448,7 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 	}
 	idx_t col = 1;
 	SetResultVectorString(output.data[col++], read_ids);
-	SetResultVectorNull(output.data[col++]); // comment: the spot name, reconstructed in a later phase
+	SetResultVectorString(output.data[col++], comments);
 	SetResultVectorString(output.data[col++], seq1);
 	SetResultVectorStringNullable(output.data[col++], seq2);
 	SetQualityList(output.data[col++], qual1);

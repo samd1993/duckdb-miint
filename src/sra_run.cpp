@@ -2,9 +2,11 @@
 
 #include "sra_codecs.hpp"
 #include "sra_column.hpp"
+#include "sra_name.hpp"
 
 #include <algorithm>
 #include <cstring>
+#include <optional>
 
 namespace miint {
 namespace sra {
@@ -211,6 +213,27 @@ public:
 		}
 	}
 
+	// The row's cell as text (an ascii column).
+	std::string Text(int64_t row) {
+		const uint8_t *data;
+		uint64_t offset, count;
+		Cell(row, data, offset, count);
+		return std::string(reinterpret_cast<const char *>(data) + offset, count);
+	}
+
+	// The first element of an I32 cell, or nothing when the cell is empty.
+	std::optional<int32_t> FirstInt(int64_t row) {
+		const uint8_t *data;
+		uint64_t offset, count;
+		Cell(row, data, offset, count);
+		if (count == 0) {
+			return std::nullopt;
+		}
+		int32_t v;
+		std::memcpy(&v, data + offset * 4, 4);
+		return v;
+	}
+
 	template <typename T>
 	void Values(int64_t row, std::vector<T> &out) {
 		const uint8_t *data;
@@ -237,9 +260,31 @@ const char FOUR_NA_TEXT[17] = ".ACMGRSVTWYHKDBN";
 
 } // namespace
 
+namespace {
+bool StartsWith(const std::string &s, const std::string &prefix) {
+	return s.compare(0, prefix.size(), prefix) == 0;
+}
+} // namespace
+
 struct SpotReader::Impl {
 	std::shared_ptr<const SraTable> table;
 	std::unique_ptr<ColumnSource> read, altread, quality, read_start, read_len, read_type;
+
+	// How the schema names spots (NAME = _out_name, its first alternative whose inputs exist).
+	enum class Naming {
+		None,     // no alternative resolves: fasterq-dump prints no $sn
+		NoCoord,  // format_spot_name_no_coord(fmt): align tables
+		Coord,    // format_spot_name(fmt, X, Y [, spot_name]): skeyname tables
+		SpotName, // the stored name verbatim
+	};
+	Naming naming = Naming::None;
+	std::string fixed_format;                // align tables without RAW_NAME: '$R'
+	std::unique_ptr<ColumnSource> name_fmt;  // NAME_FMT, or RAW_NAME on align:tbl:seq#2
+	std::unique_ptr<SkeyIndex> skey;         // projects a format for rows with an empty NAME_FMT
+	std::unique_ptr<ColumnSource> x, y;      // coordinates
+	std::unique_ptr<ColumnSource> spot_name; // SPOT_NAME, or RAW_NAME
+
+	void ResolveNaming(const SraTable &t);
 	int64_t first = 1;
 	uint64_t count = 0;
 	std::vector<uint8_t> bases4na;
@@ -274,6 +319,57 @@ SpotReader::SpotReader(std::shared_ptr<const SraTable> table) : impl_(std::make_
 	}
 	// fasterq-dump iterates over the rows of READ.
 	m.read->Range(m.first, m.count);
+	m.ResolveNaming(t);
+}
+
+// Chooses how spots are named, as VDB resolves the schema's alternatives when a cursor opens:
+//   align:tbl:seq    out_name_fmt = .RAW_NAME | '$R' (#2), '$R' (#1.x); no coordinates
+//   skeyname tables  out_name_fmt = idx:text:project<'skey'>(.NAME_FMT), X = .X, Y = .Y,
+//                    out_spot_name = .SPOT_NAME | .RAW_NAME
+//   _out_name = format_spot_name(fmt, X, Y, spot_name) | format_spot_name(fmt, X, Y)
+//             | format_spot_name_no_coord(fmt) | out_spot_name
+void SpotReader::Impl::ResolveNaming(const SraTable &t) {
+	Impl &m = *this;
+	auto ascii = [&](const char *name) {
+		return ColumnSource::Exists(t, name) ? std::make_unique<ColumnSource>(t, name, "ascii") : nullptr;
+	};
+	const std::string type = t.TableType();
+	if (StartsWith(type, "NCBI:align:tbl:seq")) {
+		m.naming = Naming::NoCoord;
+		bool raw_name_format = !StartsWith(type, "NCBI:align:tbl:seq#1");
+		m.name_fmt = raw_name_format ? ascii("RAW_NAME") : nullptr;
+		if (!m.name_fmt) {
+			m.fixed_format = "$R";
+		}
+		return;
+	}
+	m.spot_name = ascii("SPOT_NAME");
+	if (!m.spot_name) {
+		m.spot_name = ascii("RAW_NAME");
+	}
+	// The format exists only through the index: without it, VDB cannot build the projection and
+	// names fall back to the stored spot name, whatever NAME_FMT holds.
+	std::string skey_path = t.Prefix() + "idx/skey";
+	if (t.Archive().Find(skey_path) != nullptr) {
+		m.name_fmt = ascii("NAME_FMT");
+		if (!m.name_fmt) {
+			throw SraUnsupportedError("an skey index without a NAME_FMT column (an older spot-name schema, which no "
+			                          "public run surveyed had)");
+		}
+		m.skey = std::make_unique<SkeyIndex>(t.Archive().ReadFile(skey_path));
+	}
+	if (m.name_fmt) {
+		if (ColumnSource::Exists(t, "X") && ColumnSource::Exists(t, "Y")) {
+			m.x = std::make_unique<ColumnSource>(t, "X", "INSDC:coord:val");
+			m.y = std::make_unique<ColumnSource>(t, "Y", "INSDC:coord:val");
+			m.naming = Naming::Coord;
+		} else {
+			m.naming = Naming::NoCoord;
+			m.spot_name.reset(); // format_spot_name_no_coord takes the format only
+		}
+	} else if (m.spot_name) {
+		m.naming = Naming::SpotName;
+	}
 }
 
 SpotReader::~SpotReader() = default;
@@ -338,6 +434,25 @@ void SpotReader::Read(int64_t row_id, Spot &out) {
 		out.read_type.clear();
 	}
 
+	// The spot's name.
+	using Naming = Impl::Naming;
+	out.has_name = m.naming != Naming::None;
+	out.name.clear();
+	if (m.naming == Naming::SpotName) {
+		out.name = m.spot_name->Text(row_id);
+	} else if (m.naming != Naming::None) {
+		std::string fmt = m.name_fmt ? m.name_fmt->Text(row_id) : m.fixed_format;
+		if (fmt.empty() && m.skey) {
+			fmt = m.skey->Project(row_id);
+		}
+		std::string stored = m.spot_name ? m.spot_name->Text(row_id) : std::string();
+		if (m.naming == Naming::Coord) {
+			out.name = FormatSpotName(fmt, m.x->FirstInt(row_id), m.y->FirstInt(row_id), row_id, stored);
+		} else {
+			out.name = FormatSpotNameNoCoord(fmt, row_id, stored);
+		}
+	}
+
 	// fasterq-dump's per-spot checks (fq_seq_ua_iter.c); each stops the run.
 	if (out.read_start.size() != out.read_len.size()) {
 		throw SraFormatError(where + ": READ_START has " + std::to_string(out.read_start.size()) +
@@ -365,6 +480,8 @@ void Emit(const Spot &spot, uint32_t read_number, uint32_t destination, size_t s
 	r.spot = spot.row_id;
 	r.read_number = read_number;
 	r.destination = destination;
+	r.has_name = spot.has_name;
+	r.name = spot.name;
 	r.bases = spot.bases.substr(start, len);
 	r.quality.resize(len);
 	for (size_t i = 0; i < len; i++) {

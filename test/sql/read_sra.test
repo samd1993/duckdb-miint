@@ -6,8 +6,8 @@ require miint
 
 # Every read must match fasterq-dump's output for the same run (the committed oracles), as
 # read_fastx reads those FASTQ files: same reads, bases and qualities, in fasterq-dump's order,
-# with mates paired the way --split-3 writes them. Spot names (the comment column) are compared
-# once they are reconstructed.
+# with mates paired the way --split-3 writes them, and the same defline after the id (the comment
+# column: the spot name, as fasterq-dump rebuilds it, then read 1's length).
 
 # ---------------------------------------------------------------------------------------------
 # Arguments, checked when the query binds
@@ -114,10 +114,10 @@ FROM read_sra(['data/sra/SRR32151205.sra', 'data/sra/SRR34459993.sra', 'data/sra
 # The oracle as read_fastx reads it: mates from _1/_2 paired by position, and the unpaired file.
 statement ok
 CREATE TABLE oracle AS
-SELECT read_id, sequence1, sequence2, qual1, qual2
+SELECT read_id, comment, sequence1, sequence2, qual1, qual2
 FROM read_fastx('data/sra/oracle/*/split_3/*_1.fastq.gz', sequence2 := 'data/sra/oracle/*/split_3/*_2.fastq.gz')
 UNION ALL
-SELECT read_id, sequence1, sequence2, qual1, qual2
+SELECT read_id, comment, sequence1, sequence2, qual1, qual2
 FROM read_fastx('data/sra/oracle/*/split_3/*.fastq.gz', include_filepath := true)
 WHERE NOT regexp_matches(filepath, '_[0-9]\.fastq\.gz$');
 
@@ -127,12 +127,12 @@ SELECT (SELECT count(*) FROM ours), (SELECT count(*) FROM oracle);
 8865	8865
 
 query I
-SELECT count(*) FROM (SELECT read_id, sequence1, sequence2, qual1, qual2 FROM ours EXCEPT ALL SELECT * FROM oracle);
+SELECT count(*) FROM (SELECT read_id, comment, sequence1, sequence2, qual1, qual2 FROM ours EXCEPT ALL SELECT * FROM oracle);
 ----
 0
 
 query I
-SELECT count(*) FROM (SELECT * FROM oracle EXCEPT ALL SELECT read_id, sequence1, sequence2, qual1, qual2 FROM ours);
+SELECT count(*) FROM (SELECT * FROM oracle EXCEPT ALL SELECT read_id, comment, sequence1, sequence2, qual1, qual2 FROM ours);
 ----
 0
 
@@ -181,7 +181,7 @@ FROM read_sra(['data/sra/SRR32151205.sra', 'data/sra/SRR34459993.sra', 'data/sra
 
 statement ok
 CREATE TABLE oracle_spot AS
-SELECT read_id, sequence1, qual1 FROM read_fastx('data/sra/oracle/*/split_spot/*.fastq.gz');
+SELECT read_id, comment, sequence1, qual1 FROM read_fastx('data/sra/oracle/*/split_spot/*.fastq.gz');
 
 query II
 SELECT (SELECT count(*) FROM ours_spot), (SELECT count(*) FROM oracle_spot);
@@ -189,12 +189,12 @@ SELECT (SELECT count(*) FROM ours_spot), (SELECT count(*) FROM oracle_spot);
 12777	12777
 
 query I
-SELECT count(*) FROM (SELECT read_id, sequence1, qual1 FROM ours_spot EXCEPT ALL SELECT * FROM oracle_spot);
+SELECT count(*) FROM (SELECT read_id, comment, sequence1, qual1 FROM ours_spot EXCEPT ALL SELECT * FROM oracle_spot);
 ----
 0
 
 query I
-SELECT count(*) FROM (SELECT * FROM oracle_spot EXCEPT ALL SELECT read_id, sequence1, qual1 FROM ours_spot);
+SELECT count(*) FROM (SELECT * FROM oracle_spot EXCEPT ALL SELECT read_id, comment, sequence1, qual1 FROM ours_spot);
 ----
 0
 
