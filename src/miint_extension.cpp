@@ -32,6 +32,7 @@
 #include <read_alignment_header.hpp>
 #include <read_sequences_sam.hpp>
 #include <read_sequences_sff.hpp>
+#include "read_sra.hpp"
 #include <align_minimap2.hpp>
 #include <align_minimap2_sharded.hpp>
 #include <save_minimap2_index.hpp>
@@ -342,6 +343,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                 "sizes groups from the memory budget.",
 	                                 LogicalType::BIGINT, Value::BIGINT(0));
 
+	// Spots per read_sra work unit: the unit of parallel decoding and of output batches. Tests
+	// lower it to spread a small fixture over several units and threads.
+	ena_db_config.AddExtensionOption("miint_sra_spots_per_unit",
+	                                 "Spots per read_sra work unit, the unit of parallel decoding. 0 uses the default "
+	                                 "(131072).",
+	                                 LogicalType::BIGINT, Value::BIGINT(0));
+
 	ScalarFunction version_func("miint_version", {}, LogicalType::VARCHAR, MiintVersionFunction);
 	loader.RegisterFunction(version_func);
 
@@ -353,6 +361,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ReadAlignmentHeaderTableFunction::Register(loader);
 	ReadSequencesSamTableFunction::Register(loader);
 	ReadSequencesSFFTableFunction::Register(loader);
+	ReadSraTableFunction::Register(loader);
 #ifdef MIINT_HAS_HDF5
 	ReadBIOMTableFunction::Register(loader);
 #endif
