@@ -404,6 +404,9 @@ for SRA_PIN in \
     # Compared directly: macOS's sha256sum -c does not read a checklist from stdin.
     if [ "$(sha256sum "$SRA_FILE" 2>/dev/null | awk '{print $1}')" != "$SRA_SHA" ]; then
         SRA_REAL_OK=0
+        if [ -f "$SRA_FILE" ]; then
+            echo "Warning: $SRA_FILE does not match its sha256; the SRA real data tests will skip until it is removed and downloaded again"
+        fi
     fi
 done
 if [ "$SRA_REAL_OK" = 1 ]; then

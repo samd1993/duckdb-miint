@@ -177,20 +177,18 @@ uint32_t SkeyIndex::Ordinal(int64_t row_id) const {
 }
 
 std::string SkeyIndex::Project(int64_t row_id) const {
-	uint32_t ord = Ordinal(row_id);
-	if (ord == 0) {
+	return KeyOfOrdinal(Ordinal(row_id));
+}
+
+std::string SkeyIndex::KeyOfOrdinal(uint32_t ord) const {
+	if (ord == 0 || ord > count_) {
 		return std::string();
-	}
-	if (ord == cached_ord_) {
-		return cached_key_;
 	}
 	uint32_t node = LoadU32(&bytes_[ord2node_ + 4 * size_t(ord - 1)]);
 	std::string key = node == 0 ? std::string() : KeyOfNode(node);
 	while (!key.empty() && key.back() == '\0') {
 		key.pop_back();
 	}
-	cached_ord_ = ord;
-	cached_key_ = key;
 	return key;
 }
 
@@ -347,6 +345,9 @@ std::string FormatSpotName(const std::string &fmt, std::optional<int32_t> x_cell
 					throw SraFormatError("spot " + std::to_string(row_id) + ": Y is too large for a $Q name");
 				}
 				uint32_t q = x << 12 | y;
+				if (x > 0xFFFFF || q >= 36u * 36 * 36 * 36 * 36) {
+					throw SraFormatError("spot " + std::to_string(row_id) + ": X is too large for a $Q name");
+				}
 				char code[5];
 				for (int k = 4; k > 0; k--) {
 					code[k] = Q_ALPHABET[q % 36];

@@ -71,6 +71,20 @@ private:
 	throw IOException(msg);
 }
 
+// An interrupt, a deadline or an exhausted resource is the query's failure, never a run's: it must
+// not be skipped as a run that could not be fetched, nor reworded as one.
+bool IsRunFailure(const std::exception &e) {
+	switch (ErrorData(e).Type()) {
+	case ExceptionType::INTERRUPT:
+	case ExceptionType::OUT_OF_MEMORY:
+	case ExceptionType::FATAL:
+	case ExceptionType::INTERNAL:
+		return false;
+	default:
+		return true;
+	}
+}
+
 struct OpenRun {
 	std::string location;
 	std::string accession;
@@ -150,6 +164,9 @@ struct GlobalState : public GlobalTableFunctionState {
 			} catch (const SraUnsupportedError &e) {
 				ThrowForRun(bind, run->accession, e);
 			} catch (const std::exception &e) {
+				if (!IsRunFailure(e)) {
+					throw;
+				}
 				// The run could not be fetched (missing from the bucket, the network). With other
 				// runs asked for, skip it rather than lose theirs (read_ena_sequences' policy).
 				std::string msg = ErrorData(e).RawMessage();
@@ -409,7 +426,8 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 			ls.next_row = ls.unit.first_row;
 			if (ls.reader_run != ls.unit.run) {
 				try {
-					ls.reader = std::make_unique<SpotReader>(ls.unit.run->table);
+					// The run's name index is shared with the reader Claim made, not read again.
+					ls.reader = std::make_unique<SpotReader>(ls.unit.run->table, ls.unit.run->prefetcher.get());
 				} catch (const SraFormatError &e) {
 					ThrowForRun(bind, ls.unit.run->accession, e);
 				} catch (const SraUnsupportedError &e) {
@@ -424,6 +442,13 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 			ThrowForRun(bind, ls.unit.run->accession, e);
 		} catch (const SraUnsupportedError &e) {
 			ThrowForRun(bind, ls.unit.run->accession, e);
+		} catch (const std::exception &e) {
+			// A run that fails partway (a fetch the network refused) fails the query: its rows so
+			// far are already out. The error names the run.
+			if (!IsRunFailure(e)) {
+				throw;
+			}
+			throw IOException(bind.function + ": " + ls.unit.run->accession + ": " + ErrorData(e).RawMessage());
 		}
 	}
 

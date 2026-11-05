@@ -94,6 +94,12 @@ struct SraPrefetchingSource::State {
 	// read-ahead that did not fit.
 	std::shared_ptr<Block> Ensure(uint64_t b, bool demand) {
 		auto it = blocks.find(b);
+		if (it != blocks.end() && demand && it->second->done && it->second->error && it->second.use_count() == 1) {
+			// A failed fetch nobody waited on (read ahead): the reader now asking for the block gets
+			// a fresh fetch, not an error that may have been transient.
+			blocks.erase(it);
+			it = blocks.end();
+		}
 		if (it != blocks.end()) {
 			if (demand && !it->second->started) {
 				queue.erase(std::remove(queue.begin(), queue.end(), b), queue.end());

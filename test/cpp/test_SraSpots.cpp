@@ -6,6 +6,8 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <string>
@@ -282,6 +284,52 @@ SraTable WithRenamed(const std::string &run, const std::string &from, const std:
 	return SraTable(SraArchiveFromBytes(std::move(bytes)));
 }
 } // namespace
+
+namespace {
+// An in-memory archive that counts the bytes read from it.
+class CountingSource : public SraByteSource {
+public:
+	explicit CountingSource(std::vector<uint8_t> bytes) : bytes_(std::move(bytes)) {
+	}
+	uint64_t Size() const override {
+		return bytes_.size();
+	}
+	void ReadAt(uint64_t pos, uint8_t *buf, size_t n) const override {
+		std::memcpy(buf, bytes_.data() + pos, n);
+		read_ += n;
+	}
+	uint64_t BytesRead() const {
+		return read_;
+	}
+
+private:
+	std::vector<uint8_t> bytes_;
+	mutable std::atomic<uint64_t> read_ {0};
+};
+} // namespace
+
+TEST_CASE("Readers of one run share its name index", "[sra]") {
+	// Each decoding thread has a reader. A run that stores whole names as keys has an index of
+	// tens of bytes per spot, so a reader made for another thread takes the first one's index
+	// rather than reading its own copy.
+	auto source = std::make_shared<CountingSource>(SlurpBytes("data/sra/SRR24770212.sra"));
+	auto t = std::make_shared<const SraTable>(std::make_shared<const KarArchive>(source));
+	const uint64_t skey_bytes = t->Archive().Find("tbl/SEQUENCE/idx/skey")->size;
+	SpotReader first(t);
+	uint64_t before = source->BytesRead();
+	SpotReader alone(t);
+	const uint64_t unshared = source->BytesRead() - before;
+	before = source->BytesRead();
+	SpotReader sharing(t, &first);
+	const uint64_t shared = source->BytesRead() - before;
+	CHECK(unshared - shared == skey_bytes);
+	Spot a, b;
+	for (int64_t row = first.FirstRow(); row < first.FirstRow() + int64_t(first.RowCount()); row++) {
+		first.Read(row, a);
+		sharing.Read(row, b);
+		REQUIRE(a.name == b.name);
+	}
+}
 
 TEST_CASE("A name format is only taken through the skey index", "[sra]") {
 	// The schemas produce the format with idx:text:project<'skey'>(.NAME_FMT), which VDB cannot

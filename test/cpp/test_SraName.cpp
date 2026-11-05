@@ -4,7 +4,9 @@
 #include "sra_source.hpp"
 #include "sra_test_helpers.hpp"
 
+#include <atomic>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace miint::sra;
@@ -57,6 +59,32 @@ TEST_CASE("SkeyIndex has no key for rows whose name is stored elsewhere", "[sra]
 	CHECK(idx.Project(1593).empty());
 }
 
+TEST_CASE("SkeyIndex can be read from several threads at once", "[sra]") {
+	// A run's readers share one index (it can be hundreds of MB), so projecting must not write to
+	// it.
+	const SkeyIndex sparse = IndexOf("ERR16653849");
+	std::vector<std::string> expected;
+	for (int64_t row = 1; row <= 617; row++) {
+		expected.push_back(sparse.Project(row));
+	}
+	std::atomic<int> mismatches {0};
+	std::vector<std::thread> threads;
+	for (int t = 0; t < 4; t++) {
+		threads.emplace_back([&, t] {
+			for (int pass = 0; pass < 20; pass++) {
+				for (int64_t i = 0; i < 617; i++) {
+					int64_t row = (i * (t + 1) * 7919) % 617 + 1; // a different order on each thread
+					mismatches += sparse.Project(row) != expected[size_t(row - 1)];
+				}
+			}
+		});
+	}
+	for (auto &th : threads) {
+		th.join();
+	}
+	CHECK(mismatches == 0);
+}
+
 TEST_CASE("SkeyIndex refuses index versions absent from public runs", "[sra]") {
 	auto bytes = OpenSraFixture("SRR34459993.sra")->ReadFile("tbl/SEQUENCE/idx/skey");
 	bytes[4] = 3; // version 3: the original trie id coding
@@ -73,6 +101,9 @@ TEST_CASE("FormatSpotName substitutes coordinates", "[sra]") {
 	CHECK(FormatSpotName("$R", std::nullopt, std::nullopt, 42, "") == "42");
 	// 454 names: base 36 of (X << 12) | Y.
 	CHECK(FormatSpotName("ABCDE$Q", 1, 2, 7, "") == "ABCDEAADF4");
+	// Five base-36 digits hold (X << 12) | Y only below 36^5: a larger X has no $Q name.
+	CHECK(FormatSpotName("$Q", 14761, 0xFFF, 7, "") == "999HT");
+	CHECK(ThrowsTypeMentioning<SraFormatError>([] { FormatSpotName("$Q", 14763, 0, 7, ""); }, "X is too large"));
 }
 
 TEST_CASE("FormatSpotName copies what is not a substitution", "[sra]") {

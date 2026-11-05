@@ -390,7 +390,8 @@ void ReadENASequencesTableFunction::Execute(ClientContext &context, TableFunctio
 						const auto &skipped = global_state.skipped_runs;
 						every_run_failed = miint::EveryRunFailed(skipped.size(), global_state.total_runs);
 						if (every_run_failed) {
-							msg = miint::BuildEveryRunFailedMessage(skipped, global_state.first_skip_error);
+							msg = miint::BuildEveryRunFailedMessage("read_ena_sequences", skipped,
+							                                        global_state.first_skip_error);
 						} else if (!skipped.empty()) {
 							msg = "read_ena_sequences: WARNING: " + std::to_string(skipped.size()) +
 							      " run(s) skipped due to download errors:";

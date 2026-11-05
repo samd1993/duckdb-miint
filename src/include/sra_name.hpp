@@ -21,8 +21,13 @@ class SkeyIndex {
 public:
 	explicit SkeyIndex(std::vector<uint8_t> bytes);
 
-	// The key (name format) of the row, without trailing NULs; empty if the index has none.
+	// The key (name format) of the row, without trailing NULs; empty if the index has none. Safe to
+	// call from several threads.
 	std::string Project(int64_t row_id) const;
+	// Project in two steps, for a caller that keeps the last key: consecutive rows usually share
+	// one (a tile), so Ordinal changes far less often than the row. Ordinal 0 has no key.
+	uint32_t Ordinal(int64_t row_id) const;
+	std::string KeyOfOrdinal(uint32_t ordinal) const;
 
 private:
 	std::vector<uint8_t> bytes_;
@@ -45,12 +50,8 @@ private:
 	size_t ord2node_ = 0;
 	uint32_t count_ = 0;
 	std::vector<uint64_t> id2ord_;
-	// Consecutive rows usually share a key (one per tile): the last one is kept.
-	mutable uint32_t cached_ord_ = 0;
-	mutable std::string cached_key_;
 
 	std::string KeyOfNode(uint32_t node_id) const;
-	uint32_t Ordinal(int64_t row_id) const;
 };
 
 // INSDC:SRA:format_spot_name: the format with $X / $Y (optionally followed by %d, adding

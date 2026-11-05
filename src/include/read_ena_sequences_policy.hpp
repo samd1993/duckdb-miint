@@ -47,11 +47,6 @@ inline std::string BuildEveryRunFailedMessage(const std::string &function, const
 	return msg + "; first error: " + first_error;
 }
 
-inline std::string BuildEveryRunFailedMessage(const std::vector<std::string> &accessions,
-                                              const std::string &first_error) {
-	return BuildEveryRunFailedMessage("read_ena_sequences", accessions, first_error);
-}
-
 // The mismatch message is a published contract (docs/insdc_ena.md, "Message
 // contract"), pinned by test/cpp/test_ena_md5.cpp; rewording it is breaking.
 inline std::string BuildMd5MismatchMessage(const std::string &label, const std::string &expected,

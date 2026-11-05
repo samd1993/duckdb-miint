@@ -69,7 +69,7 @@ public:
 		}
 		return most;
 	}
-	int64_t fail_at_ = -1;
+	std::atomic<int64_t> fail_at_ {-1};
 
 private:
 	std::vector<uint8_t> bytes_;
@@ -217,6 +217,24 @@ TEST_CASE("SraPrefetchingSource gives a failed fetch's error to the reader that 
 	// Other blocks are unaffected.
 	src.ReadAt(7000, buf.data(), buf.size());
 	CHECK(std::equal(buf.begin(), buf.end(), backend->Bytes().begin() + 7000));
+}
+
+TEST_CASE("SraPrefetchingSource fetches again a block whose read-ahead failed", "[sra]") {
+	// A fetch made ahead of any reader can fail on a transient error long before the block is
+	// needed; the reader that needs it must get a fresh fetch, not that old error.
+	auto backend = std::make_shared<RecordingSource>(10'000);
+	backend->fail_at_ = 3500;
+	SraPrefetchingSource src(backend, SmallBlocks());
+	std::vector<uint8_t> buf(100);
+	src.ReadAt(0, buf.data(), buf.size()); // reads ahead into block 3, which fails
+	for (int i = 0; i < 200 && !backend->Offsets().count(3000); i++) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	REQUIRE(backend->Offsets().count(3000));
+	std::this_thread::sleep_for(std::chrono::milliseconds(50)); // let the failure be recorded
+	backend->fail_at_ = -1;
+	src.ReadAt(3400, buf.data(), buf.size());
+	CHECK(std::equal(buf.begin(), buf.end(), backend->Bytes().begin() + 3400));
 }
 
 TEST_CASE("SraPrefetchingSource can be destroyed with fetches in flight", "[sra]") {

@@ -59,7 +59,10 @@ struct Spot {
 // changes, from the table's metadata. Not thread-safe; use one reader per thread.
 class SpotReader {
 public:
-	explicit SpotReader(std::shared_ptr<const SraTable> table);
+	// A reader of the same run as `share_from` takes its name index rather than reading another
+	// copy: each decoding thread has a reader, and the index of a run that stores whole names
+	// holds tens of bytes per spot.
+	explicit SpotReader(std::shared_ptr<const SraTable> table, const SpotReader *share_from = nullptr);
 	~SpotReader();
 
 	// The table's row ids are [FirstRow(), FirstRow() + RowCount()).
