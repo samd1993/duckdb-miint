@@ -102,7 +102,7 @@ std::shared_ptr<const SraTable> OpenTable(ClientContext &context, const std::str
 	if (miint::RemoteFileHelper::IsRemotePath(location)) {
 #if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
 		// A wasm build without -pthread cannot start the prefetcher's threads (std::thread's
-		// constructor aborts there): read the ranges directly, one at a time (miint_parallel.cpp).
+		// constructor aborts there rather than throwing): read the ranges directly, one at a time.
 		source = std::make_shared<DuckDBSraSource>(fs, location, true);
 #else
 		// Many concurrent ranges, each a direct read: the prefetcher is the cache. Each decoding

@@ -2,8 +2,6 @@
 
 #include "sra_codecs.hpp"
 
-#include <zlib.h>
-
 #include <algorithm>
 #include <array>
 #include <map>

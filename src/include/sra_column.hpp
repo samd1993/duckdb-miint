@@ -58,8 +58,9 @@ struct PageMap {
 	std::vector<uint32_t> row_length;
 	std::vector<uint64_t> data_offset;
 
-	// Elements the decoded data must hold for every row to be in range: the end of the
-	// furthest row.
+	// The end of the furthest row: the tests' check that a blob's framing accounts for its payload.
+	// Not a bound on file data, since the sum wraps for an offset near 2^64 (DecodeBlob checks each
+	// row instead).
 	uint64_t ElementsSpanned() const;
 };
 

@@ -66,9 +66,9 @@ private:
 	std::vector<uint8_t> bytes_;
 };
 
-// A remote .sra read through many concurrent range requests. One HTTP stream from NCBI's S3
-// bucket delivered about 4 MB/s and 16-32 concurrent ranges 35-47 MB/s (2026-11, a campus network;
-// docs/internals/sra-reader.md), so the file is fetched in fixed blocks by a pool of workers. A block read
+// A remote .sra read through many concurrent range requests: one HTTP stream from NCBI's S3 bucket
+// is several times slower than 16-32 at once (docs/internals/sra-reader.md, "Measurements"), so
+// the file is fetched in fixed blocks by a pool of workers. A block read
 // on demand also queues the blocks after it, so each column a decoder walks through is fetched
 // ahead of it. Blocks stay cached up to a bound, least recently used (or fetched) first. The bound
 // must hold every reader's current and previous block and its read-ahead, or blocks are fetched

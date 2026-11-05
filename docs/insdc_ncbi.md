@@ -279,7 +279,7 @@ Read sequencing runs from the SRA's public copy on AWS (the `sra-pub-run-odp` bu
 - A run that cannot be opened (absent from the bucket, or a network failure) fails the query when it is the only run asked for. With several, it is skipped with a warning in `miint_warnings()`, and the query fails only if every run fails, as in `read_ena_sequences` (which also retries a failed run once; this function does not). A run that fails partway through, after its first rows were returned, fails the query, naming the run
 - A run of a kind miint does not read (cSRA, SRA Lite, PacBio or Nanopore consensus databases; see [`read_sra`](reading.md#sra)) or a damaged run always fails the query, naming the run
 - Throughput comes from concurrency: up to 32 range requests in flight per run, with read-ahead cached in memory (about 72 MB per DuckDB thread, at most 1 GiB, outside DuckDB's `memory_limit`). A run is read about as fast as the file itself downloads
-- A `LIMIT` or `max_execution_time` stops the scan, and the requests queued for it are dropped; requests already in flight finish first, so a `LIMIT` on a large run still fetches the first part of each thread's share of it (about 100 MB of a 1.35 GB run)
+- A `LIMIT` or `max_execution_time` stops the scan, and the requests queued for it are dropped; requests already in flight finish first, so a `LIMIT` on a large run still fetches the first part of each thread's share of it (about 110 MB of a 1.35 GB run)
 
 **Examples:**
 ```sql

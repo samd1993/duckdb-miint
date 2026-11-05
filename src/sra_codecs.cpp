@@ -12,7 +12,7 @@ namespace sra {
 
 Inflated InflateRaw(const uint8_t *src, size_t n, uint8_t *dst, size_t dsize, const char *what) {
 	if (n > UINT32_MAX || dsize > UINT32_MAX) {
-		throw SraUnsupportedError(std::string(what) + " larger than 4 GiB");
+		throw SraFormatError(std::string(what) + " is larger than 4 GiB");
 	}
 	z_stream zs {};
 	if (inflateInit2(&zs, -15) != Z_OK) {

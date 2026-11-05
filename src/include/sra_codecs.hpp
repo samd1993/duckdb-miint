@@ -13,7 +13,8 @@ namespace sra {
 // (little-endian) byte order.
 
 // Inflates a raw deflate stream (no zlib header) into dst, which holds dsize bytes. Throws
-// SraFormatError naming `what` unless the stream ends within dsize.
+// SraFormatError naming `what` unless the stream ends within dsize, or when either size is over
+// 4 GiB (zlib counts in 32 bits; no real blob is that large).
 struct Inflated {
 	size_t used;     // input bytes the stream took
 	size_t produced; // bytes written to dst
