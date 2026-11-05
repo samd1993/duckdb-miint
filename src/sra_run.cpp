@@ -205,6 +205,12 @@ public:
 		count = blob_.page_map.row_length[i];
 	}
 
+	void PrefetchRows(int64_t first, int64_t end) const {
+		if (physical_) {
+			physical_->PrefetchRows(first, end);
+		}
+	}
+
 	template <typename T>
 	void Values(int64_t row, std::vector<T> &out) {
 		const uint8_t *data;
@@ -271,6 +277,16 @@ SpotReader::SpotReader(std::shared_ptr<const SraTable> table) : impl_(std::make_
 }
 
 SpotReader::~SpotReader() = default;
+
+void SpotReader::PrefetchRows(int64_t first, int64_t end) {
+	Impl &m = *impl_;
+	for (auto *col :
+	     {m.read.get(), m.altread.get(), m.quality.get(), m.read_start.get(), m.read_len.get(), m.read_type.get()}) {
+		if (col) {
+			col->PrefetchRows(first, end);
+		}
+	}
+}
 
 int64_t SpotReader::FirstRow() const {
 	return impl_->first;

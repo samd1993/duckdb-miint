@@ -36,14 +36,20 @@ inline bool EveryRunFailed(size_t skipped_runs, size_t total_runs) {
 }
 
 // `accessions` in the order the runs failed; `first_error` is the first failure
-// recorded, which with parallel workers need not be the first run's.
-inline std::string BuildEveryRunFailedMessage(const std::vector<std::string> &accessions,
+// recorded, which with parallel workers need not be the first run's. `function`
+// names the table function (read_ncbi_sra_sequences shares the policy).
+inline std::string BuildEveryRunFailedMessage(const std::string &function, const std::vector<std::string> &accessions,
                                               const std::string &first_error) {
-	std::string msg = "read_ena_sequences: every run failed (" + std::to_string(accessions.size()) + "):";
+	std::string msg = function + ": every run failed (" + std::to_string(accessions.size()) + "):";
 	for (const auto &acc : accessions) {
 		msg += " " + acc;
 	}
 	return msg + "; first error: " + first_error;
+}
+
+inline std::string BuildEveryRunFailedMessage(const std::vector<std::string> &accessions,
+                                              const std::string &first_error) {
+	return BuildEveryRunFailedMessage("read_ena_sequences", accessions, first_error);
 }
 
 // The mismatch message is a published contract (docs/insdc_ena.md, "Message

@@ -68,6 +68,11 @@ if [ -z "$MIINT_HTTPS_TEST_URL" ]; then
 
     export MIINT_HTTPS_TEST_URL="http://127.0.0.1:$HTTPS_TEST_PORT"
 fi
+# read_ncbi_sra_sequences reads runs from this server instead of NCBI's bucket: it serves the
+# committed fixtures (data/sra) by byte range, as S3 serves run objects.
+if [ -z "$MIINT_SRA_RUN_URL_TEMPLATE" ]; then
+    export MIINT_SRA_RUN_URL_TEMPLATE="$MIINT_HTTPS_TEST_URL/sra/{acc}.sra"
+fi
 
 # Detect optional external tools
 if command -v ascp &> /dev/null; then

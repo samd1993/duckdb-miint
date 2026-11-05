@@ -34,6 +34,10 @@ public:
 	virtual uint64_t Size() const = 0;
 	// Reads exactly n bytes at pos, or throws SraFormatError if the file is shorter.
 	virtual void ReadAt(uint64_t pos, uint8_t *buf, size_t n) const = 0;
+	// A hint that these bytes will be read soon. A source that fetches ahead starts on them; others
+	// ignore it.
+	virtual void Prefetch(uint64_t pos, uint64_t n) const {
+	}
 
 	std::vector<uint8_t> Read(uint64_t pos, size_t n) const;
 };
@@ -60,6 +64,41 @@ public:
 
 private:
 	std::vector<uint8_t> bytes_;
+};
+
+// A remote .sra read through many concurrent range requests. One HTTP stream from NCBI's S3
+// bucket delivers about 4 MB/s and 16-32 concurrent ranges 35-47 MB/s (localdocs/
+// sra_speed_check.md), so the file is fetched in fixed blocks by a pool of workers. A block read
+// on demand also queues the blocks after it, so each column a decoder walks through is fetched
+// ahead of it. Blocks stay cached up to a bound, least recently used (or fetched) first. The bound
+// must hold every reader's current and previous block and its read-ahead, or blocks are fetched
+// twice: readers x (read_ahead + 2), a decoder thread being two readers (bases and qualities).
+class SraPrefetchingSource : public SraByteSource {
+public:
+	struct Options {
+		// Measured on a 1.35 GB run from S3 (localdocs/sra_speed_check.md): 2 MiB blocks with 16
+		// of read-ahead kept 32 requests in flight and matched a plain parallel download; 4 MiB
+		// blocks with less read-ahead left half the workers idle.
+		size_t block_size = 2 << 20;
+		size_t max_cached_blocks = 96;
+		size_t fetch_threads = 32;
+		size_t read_ahead = 16;
+	};
+
+	SraPrefetchingSource(std::shared_ptr<const SraByteSource> backend, Options options);
+	~SraPrefetchingSource() override;
+
+	uint64_t Size() const override;
+	// Waits for the blocks covering the range; rethrows a fetch's exception.
+	void ReadAt(uint64_t pos, uint8_t *buf, size_t n) const override;
+	// Queues the blocks covering the range, as far as the cache has room.
+	void Prefetch(uint64_t pos, uint64_t n) const override;
+	// Blocks held now, fetched or queued.
+	size_t CachedBlocks() const;
+
+private:
+	struct State;
+	std::unique_ptr<State> state_;
 };
 
 // Little-endian loads. Every archive variant seen in public runs is little-endian, and a

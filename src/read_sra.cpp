@@ -1,10 +1,14 @@
 #include "read_sra.hpp"
 
+#include "ensure_httpfs.hpp"
+#include "miint_log.hpp"
 #include "miint_named_parameter.hpp"
+#include "read_ena_sequences_policy.hpp"
 #include "remote_file_helper.hpp"
 #include "rype_input_stream.hpp"
 #include "table_function_common.hpp"
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
@@ -12,8 +16,11 @@
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/execution/partition_info.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 
+#include <cstdlib>
 #include <mutex>
+#include <regex>
 
 namespace duckdb {
 
@@ -21,21 +28,22 @@ using namespace miint::sra;
 
 namespace {
 
-const char *FUNCTION = "read_sra";
-
 // Consecutive spots decoded by one thread and emitted under one batch index. Large enough that
 // an order-keeping sink holds few batches (docs/internals/duckdb-engine-notes.md, "Output order
 // costs threads and memory"), small enough to spread a run over the threads. The setting
 // miint_sra_spots_per_unit overrides it.
 constexpr uint64_t DEFAULT_SPOTS_PER_UNIT = 128 * 1024;
 
+const char *DEFAULT_RUN_URL_TEMPLATE = "https://sra-pub-run-odp.s3.amazonaws.com/sra/{acc}/{acc}";
+
 // Random access to a .sra through DuckDB's file system, so local paths and (with httpfs) remote
 // URLs are read the same way. FileHandle::Read at a position is safe from several threads when
 // the handle is opened for parallel access.
 class DuckDBSraSource : public SraByteSource {
 public:
-	DuckDBSraSource(FileSystem &fs, const std::string &path)
-	    : handle_(fs.OpenFile(path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_PARALLEL_ACCESS)),
+	DuckDBSraSource(FileSystem &fs, const std::string &path, bool direct_io)
+	    : handle_(fs.OpenFile(path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_PARALLEL_ACCESS |
+	                                    (direct_io ? FileFlags::FILE_FLAGS_DIRECT_IO : FileOpenFlags()))),
 	      size_(handle_->GetFileSize()) {
 	}
 	uint64_t Size() const override {
@@ -55,8 +63,8 @@ private:
 
 // A run's errors name the function and the run: a refusal (what the run is) is invalid input,
 // damage is an I/O error.
-[[noreturn]] void ThrowForRun(const std::string &accession, const std::exception &e) {
-	std::string msg = std::string(FUNCTION) + ": " + accession + ": " + e.what();
+[[noreturn]] void ThrowForRun(const SraScanData &bind, const std::string &accession, const std::exception &e) {
+	std::string msg = bind.function + ": " + accession + ": " + e.what();
 	if (dynamic_cast<const SraUnsupportedError *>(&e)) {
 		throw InvalidInputException(msg);
 	}
@@ -64,9 +72,11 @@ private:
 }
 
 struct OpenRun {
-	std::string path;
+	std::string location;
 	std::string accession;
 	std::shared_ptr<const SraTable> table;
+	// Used under the global lock only: hints each claimed unit's blobs to the byte source.
+	mutable std::unique_ptr<SpotReader> prefetcher;
 };
 
 struct WorkUnit {
@@ -76,45 +86,82 @@ struct WorkUnit {
 	idx_t batch_index = 0;
 };
 
+std::shared_ptr<const SraTable> OpenTable(ClientContext &context, const std::string &location) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	std::shared_ptr<const SraByteSource> source;
+	if (miint::RemoteFileHelper::IsRemotePath(location)) {
+		// Many concurrent ranges, each a direct read: the prefetcher is the cache. Each decoding
+		// thread walks two columns (bases and qualities); the cache holds each walk's current and
+		// previous block and its read-ahead (SraPrefetchingSource): 72 MB per thread, at most 1 GiB.
+		SraPrefetchingSource::Options options;
+		idx_t threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
+		size_t wanted = 2 * threads * (options.read_ahead + 2);
+		options.max_cached_blocks =
+		    std::min<size_t>(std::max<size_t>(wanted, 32), (size_t(1) << 30) / options.block_size);
+		auto backend = std::make_shared<DuckDBSraSource>(fs, location, true);
+		source = std::make_shared<SraPrefetchingSource>(backend, options);
+	} else {
+		source = std::make_shared<DuckDBSraSource>(fs, location, false);
+	}
+	return std::make_shared<const SraTable>(std::make_shared<const KarArchive>(source));
+}
+
 struct GlobalState : public GlobalTableFunctionState {
 	std::mutex lock;
-	std::vector<std::string> paths;
-	size_t next_path = 0;
+	size_t next_run = 0;
 	std::shared_ptr<const OpenRun> current;
 	int64_t next_row = 0;
 	int64_t end_row = 0;
 	idx_t next_batch = 0;
 	uint64_t spots_per_unit = DEFAULT_SPOTS_PER_UNIT;
+	std::vector<std::string> skipped;
+	std::string first_skip_error;
 
 	idx_t MaxThreads() const override {
-		// A run is split into many units, so even one file uses several threads; DuckDB's
-		// threads setting bounds this.
+		// A run is split into many units, so even one run uses several threads; DuckDB's threads
+		// setting bounds this.
 		return 16;
 	}
 
 	// Hands out the next unit, in run and spot order, opening the next run when the current one
 	// is used up. The order of claims is the order of batch indexes, hence of the output.
-	bool Claim(ClientContext &context, WorkUnit &unit) {
+	bool Claim(ClientContext &context, const SraScanData &bind, WorkUnit &unit) {
 		std::lock_guard<std::mutex> guard(lock);
 		while (!current || next_row >= end_row) {
-			if (next_path >= paths.size()) {
+			current.reset();
+			if (next_run >= bind.runs.size()) {
+				if (miint::EveryRunFailed(skipped.size(), bind.runs.size())) {
+					throw IOException(miint::BuildEveryRunFailedMessage(bind.function, skipped, first_skip_error));
+				}
 				return false;
 			}
-			const std::string &path = paths[next_path++];
+			const SraScanData::Run &input = bind.runs[next_run++];
 			auto run = std::make_shared<OpenRun>();
-			run->path = path;
-			run->accession = ReadSraTableFunction::AccessionFromPath(path);
+			run->location = input.location;
+			run->accession = input.accession;
 			try {
-				auto source = std::make_shared<DuckDBSraSource>(FileSystem::GetFileSystem(context), path);
-				run->table = std::make_shared<const SraTable>(std::make_shared<const KarArchive>(source));
+				run->table = OpenTable(context, input.location);
 				ClassifyRun(GatherRunFacts(*run->table));
-				SpotReader probe(run->table);
-				next_row = probe.FirstRow();
-				end_row = next_row + int64_t(probe.RowCount());
+				run->prefetcher = std::make_unique<SpotReader>(run->table);
+				next_row = run->prefetcher->FirstRow();
+				end_row = next_row + int64_t(run->prefetcher->RowCount());
 			} catch (const SraFormatError &e) {
-				ThrowForRun(run->accession, e);
+				ThrowForRun(bind, run->accession, e);
 			} catch (const SraUnsupportedError &e) {
-				ThrowForRun(run->accession, e);
+				ThrowForRun(bind, run->accession, e);
+			} catch (const std::exception &e) {
+				// The run could not be fetched (missing from the bucket, the network). With other
+				// runs asked for, skip it rather than lose theirs (read_ena_sequences' policy).
+				std::string msg = ErrorData(e).RawMessage();
+				if (!bind.remote_runs || !miint::ShouldSkipFailedRun(bind.runs.size())) {
+					throw IOException(bind.function + ": " + run->accession + ": " + msg);
+				}
+				if (skipped.empty()) {
+					first_skip_error = msg;
+				}
+				skipped.push_back(run->accession);
+				miint::EmitWarning(context, bind.function + ": skipped run '" + run->accession + "': " + msg);
+				continue;
 			}
 			current = std::move(run);
 		}
@@ -123,6 +170,10 @@ struct GlobalState : public GlobalTableFunctionState {
 		unit.end_row = std::min<int64_t>(end_row, next_row + int64_t(spots_per_unit));
 		unit.batch_index = next_batch++;
 		next_row = unit.end_row;
+		// A thread's read-ahead follows its position, but each claim jumps it ahead of the other
+		// threads: fetch the unit's blobs, and the next unit's, before a thread arrives at them.
+		current->prefetcher->PrefetchRows(unit.first_row,
+		                                  std::min<int64_t>(end_row, unit.end_row + int64_t(spots_per_unit)));
 		return true;
 	}
 };
@@ -167,78 +218,145 @@ void SetQualityList(Vector &vec, const std::vector<const std::vector<uint8_t> *>
 	}
 }
 
-unique_ptr<FunctionData> Bind(ClientContext &context, TableFunctionBindInput &input, vector<LogicalType> &return_types,
-                              vector<Identifier> &names) {
-	auto data = make_uniq<ReadSraTableFunction::Data>();
+// The options both functions take, and the schema they imply.
+void BindOptions(SraScanData &data, named_argument_map_t &params, vector<LogicalType> &return_types,
+                 vector<Identifier> &names) {
+	const std::string &fn = data.function;
+	auto split = params.find("split");
+	if (split != params.end() && !split->second.IsNull()) {
+		std::string s = split->second.ToString();
+		if (s == "split_3") {
+			data.split = SplitMode::Split3;
+		} else if (s == "spot") {
+			data.split = SplitMode::Spot;
+		} else {
+			throw InvalidInputException(fn + ": split must be 'split_3' or 'spot', not '" + s + "'");
+		}
+	}
+	auto tech = params.find("include_technical");
+	if (tech != params.end() && !tech->second.IsNull()) {
+		data.include_technical = tech->second.GetValue<bool>();
+	}
+	if (data.include_technical && data.split == SplitMode::Split3) {
+		// fasterq-dump --split-3 --include-technical switches to split-files with a warning.
+		throw InvalidInputException(fn + ": include_technical requires split => 'spot'");
+	}
+	data.include_filepath = ParseIncludeFilepathParameter(params);
+
+	data.names = {"sequence_index", "read_id", "comment", "sequence1", "sequence2", "qual1", "qual2"};
+	data.types = {LogicalType::BIGINT,
+	              LogicalType::VARCHAR,
+	              LogicalType::VARCHAR,
+	              LogicalType::VARCHAR,
+	              LogicalType::VARCHAR,
+	              LogicalType::LIST(LogicalType::UTINYINT),
+	              LogicalType::LIST(LogicalType::UTINYINT)};
+	if (data.remote_runs) {
+		// Where read_ena_sequences puts it.
+		data.names.emplace_back("run_accession");
+		data.types.emplace_back(LogicalType::VARCHAR);
+	}
+	if (data.split == SplitMode::Spot) {
+		data.names.emplace_back("read_number");
+		data.types.emplace_back(LogicalType::UTINYINT);
+	}
+	if (data.include_filepath) {
+		data.names.emplace_back("filepath");
+		data.types.emplace_back(LogicalType::VARCHAR);
+	}
+	for (idx_t i = 0; i < data.names.size(); i++) {
+		names.emplace_back(data.names[i]);
+		return_types.push_back(data.types[i]);
+	}
+}
+
+unique_ptr<FunctionData> ReadSraBind(ClientContext &context, TableFunctionBindInput &input,
+                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto data = make_uniq<SraScanData>();
+	data->function = "read_sra";
 	auto &fs = FileSystem::GetFileSystem(context);
 	const Value &arg = input.inputs[0];
 	if (arg.IsNull()) {
 		throw InvalidInputException("read_sra: the path cannot be NULL");
 	}
+	std::vector<std::string> paths;
 	if (arg.type().id() == LogicalTypeId::VARCHAR) {
-		data->paths = ExpandGlobPatternWithInfo(fs, context, arg.ToString()).paths;
+		paths = ExpandGlobPatternWithInfo(fs, context, arg.ToString()).paths;
 	} else if (arg.type().id() == LogicalTypeId::LIST) {
-		data->paths = ExpandPathList(fs, arg, FUNCTION);
+		paths = ExpandPathList(fs, arg, "read_sra");
 	} else {
 		throw InvalidInputException("read_sra: the path must be VARCHAR or VARCHAR[]");
 	}
-	for (const auto &path : data->paths) {
+	for (const auto &path : paths) {
 		if (IsStdinPath(path)) {
 			throw InvalidInputException("read_sra: stdin is not supported (an .sra file is read at random positions)");
 		}
 		if (!miint::RemoteFileHelper::IsRemotePath(path) && !fs.FileExists(path)) {
 			throw IOException("File not found: " + path);
 		}
+		data->runs.push_back({path, ReadSraTableFunction::AccessionFromPath(path)});
 	}
+	BindOptions(*data, input.named_parameters, return_types, names);
+	return std::move(data);
+}
 
-	auto &params = input.named_parameters;
-	auto split = params.find("split");
-	if (split != params.end() && !split->second.IsNull()) {
-		std::string s = split->second.ToString();
-		if (s == "split_3") {
-			data->split = SplitMode::Split3;
-		} else if (s == "spot") {
-			data->split = SplitMode::Spot;
-		} else {
-			throw InvalidInputException("read_sra: split must be 'split_3' or 'spot', not '" + s + "'");
+unique_ptr<FunctionData> ReadNcbiBind(ClientContext &context, TableFunctionBindInput &input,
+                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto data = make_uniq<SraScanData>();
+	data->function = "read_ncbi_sra_sequences";
+	data->remote_runs = true;
+	const std::string fn = data->function;
+	const Value &arg = input.inputs[0];
+	if (arg.IsNull()) {
+		throw InvalidInputException(fn + ": the accession cannot be NULL");
+	}
+	std::vector<Value> values;
+	if (arg.type().id() == LogicalTypeId::VARCHAR) {
+		values.push_back(arg);
+	} else if (arg.type().id() == LogicalTypeId::LIST) {
+		values = ListValue::GetChildren(arg);
+	} else {
+		throw InvalidInputException(fn + ": the accession must be VARCHAR or VARCHAR[]");
+	}
+	if (values.empty()) {
+		throw InvalidInputException(fn + ": at least one accession must be provided");
+	}
+	static const std::regex RUN("[SED]RR[0-9]+");
+	for (const auto &v : values) {
+		if (v.IsNull()) {
+			throw InvalidInputException(fn + ": the accession cannot be NULL");
+		}
+		std::string acc = v.ToString();
+		auto start = acc.find_first_not_of(" \t\n\r");
+		acc =
+		    start == std::string::npos ? std::string() : acc.substr(start, acc.find_last_not_of(" \t\n\r") - start + 1);
+		if (acc.empty()) {
+			throw InvalidInputException(fn + ": the accession cannot be empty");
+		}
+		if (!std::regex_match(acc, RUN)) {
+			throw InvalidInputException(fn + ": '" + acc +
+			                            "' is not a run accession (SRR, ERR or DRR followed by digits); read_ena('" +
+			                            acc + "') lists its runs");
+		}
+		// A run named twice is read once.
+		bool seen = false;
+		for (const auto &r : data->runs) {
+			seen |= r.accession == acc;
+		}
+		if (!seen) {
+			data->runs.push_back({ReadNcbiSraSequencesTableFunction::RunUrl(acc), acc});
 		}
 	}
-	auto tech = params.find("include_technical");
-	if (tech != params.end() && !tech->second.IsNull()) {
-		data->include_technical = tech->second.GetValue<bool>();
-	}
-	if (data->include_technical && data->split == SplitMode::Split3) {
-		// fasterq-dump --split-3 --include-technical switches to split-files with a warning.
-		throw InvalidInputException("read_sra: include_technical requires split => 'spot'");
-	}
-	data->include_filepath = ParseIncludeFilepathParameter(params);
-
-	data->names = {"sequence_index", "read_id", "comment", "sequence1", "sequence2", "qual1", "qual2"};
-	data->types = {LogicalType::BIGINT,
-	               LogicalType::VARCHAR,
-	               LogicalType::VARCHAR,
-	               LogicalType::VARCHAR,
-	               LogicalType::VARCHAR,
-	               LogicalType::LIST(LogicalType::UTINYINT),
-	               LogicalType::LIST(LogicalType::UTINYINT)};
-	if (data->split == SplitMode::Spot) {
-		data->names.emplace_back("read_number");
-		data->types.emplace_back(LogicalType::UTINYINT);
-	}
-	if (data->include_filepath) {
-		data->names.emplace_back("filepath");
-		data->types.emplace_back(LogicalType::VARCHAR);
-	}
-	for (idx_t i = 0; i < data->names.size(); i++) {
-		names.emplace_back(data->names[i]);
-		return_types.push_back(data->types[i]);
-	}
+	BindOptions(*data, input.named_parameters, return_types, names);
 	return std::move(data);
 }
 
 unique_ptr<GlobalTableFunctionState> InitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+	auto &bind = input.bind_data->Cast<SraScanData>();
+	if (bind.remote_runs) {
+		miint::EnsureHttpfsLoaded(context);
+	}
 	auto state = make_uniq<GlobalState>();
-	state->paths = input.bind_data->Cast<ReadSraTableFunction::Data>().paths;
 	idx_t unit = GetNonNegativeOption(context, "miint_sra_spots_per_unit", 0, "0 uses the default");
 	if (unit > 0) {
 		state->spots_per_unit = unit;
@@ -253,7 +371,7 @@ unique_ptr<LocalTableFunctionState> InitLocal(ExecutionContext &context, TableFu
 
 // Moves up to `capacity` rows of the thread's current unit into `rows`, decoding spots as needed.
 // Clears has_unit when the unit is used up.
-void FillRows(LocalState &ls, const ReadSraTableFunction::Data &bind, idx_t capacity, std::vector<SraRow> &rows) {
+void FillRows(LocalState &ls, const SraScanData &bind, idx_t capacity, std::vector<SraRow> &rows) {
 	while (rows.size() < capacity) {
 		if (ls.pending_pos < ls.pending.size()) {
 			rows.push_back(std::move(ls.pending[ls.pending_pos++]));
@@ -273,7 +391,7 @@ void FillRows(LocalState &ls, const ReadSraTableFunction::Data &bind, idx_t capa
 }
 
 void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
-	auto &bind = data_p.bind_data->Cast<ReadSraTableFunction::Data>();
+	auto &bind = data_p.bind_data->Cast<SraScanData>();
 	auto &gs = data_p.global_state->Cast<GlobalState>();
 	auto &ls = data_p.local_state->Cast<LocalState>();
 
@@ -282,7 +400,7 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 	while (rows.empty()) {
 		if (!ls.has_unit && ls.pending_pos >= ls.pending.size()) {
 			context.BlockingInterruptCheck();
-			if (!gs.Claim(context, ls.unit)) {
+			if (!gs.Claim(context, bind, ls.unit)) {
 				output.SetChildCardinality(0);
 				return;
 			}
@@ -293,9 +411,9 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 				try {
 					ls.reader = std::make_unique<SpotReader>(ls.unit.run->table);
 				} catch (const SraFormatError &e) {
-					ThrowForRun(ls.unit.run->accession, e);
+					ThrowForRun(bind, ls.unit.run->accession, e);
 				} catch (const SraUnsupportedError &e) {
-					ThrowForRun(ls.unit.run->accession, e);
+					ThrowForRun(bind, ls.unit.run->accession, e);
 				}
 				ls.reader_run = ls.unit.run;
 			}
@@ -303,9 +421,9 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 		try {
 			FillRows(ls, bind, STANDARD_VECTOR_SIZE, rows);
 		} catch (const SraFormatError &e) {
-			ThrowForRun(ls.unit.run->accession, e);
+			ThrowForRun(bind, ls.unit.run->accession, e);
 		} catch (const SraUnsupportedError &e) {
-			ThrowForRun(ls.unit.run->accession, e);
+			ThrowForRun(bind, ls.unit.run->accession, e);
 		}
 	}
 
@@ -332,50 +450,44 @@ void Execute(ClientContext &context, TableFunctionInput &data_p, DataChunk &outp
 	SetResultVectorStringNullable(output.data[col++], seq2);
 	SetQualityList(output.data[col++], qual1);
 	SetQualityList(output.data[col++], qual2);
+	if (bind.remote_runs) {
+		SetResultVectorFilepath(output.data[col++], acc); // one run per chunk, so a constant
+	}
 	if (bind.split == SplitMode::Spot) {
 		auto numbers = FlatVector::GetDataMutable<uint8_t>(output.data[col++]);
 		for (idx_t i = 0; i < n; i++) {
 			if (rows[i].read_number > 255) {
-				throw InvalidInputException("read_sra: " + acc + ": spot " + std::to_string(rows[i].spot) +
+				throw InvalidInputException(bind.function + ": " + acc + ": spot " + std::to_string(rows[i].spot) +
 				                            " has more than 255 reads");
 			}
 			numbers[i] = uint8_t(rows[i].read_number);
 		}
 	}
 	if (bind.include_filepath) {
-		SetResultVectorFilepath(output.data[col++], ls.unit.run->path);
+		SetResultVectorFilepath(output.data[col++], ls.unit.run->location);
 	}
 	output.SetChildCardinality(n);
 }
 
 OperatorPartitionData GetPartitionData(ClientContext &context, TableFunctionGetPartitionInput &input) {
 	if (input.partition_info.RequiresPartitionColumns()) {
-		throw InternalException("read_sra: partition columns are not supported");
+		throw InternalException("SRA scan: partition columns are not supported");
 	}
 	return OperatorPartitionData(input.local_state->Cast<LocalState>().batch_index);
 }
 
 // About 300 bytes of .sra per spot in the surveyed runs; a lower figure errs high, the safe side
-// (EstimateFileScanCardinality).
+// (EstimateFileScanCardinality). A remote run counts as large.
 unique_ptr<NodeStatistics> Cardinality(ClientContext &context, const FunctionData *bind_data) {
-	return EstimateFileScanCardinality(bind_data->Cast<ReadSraTableFunction::Data>().paths, 100);
-}
-
-} // namespace
-
-std::string ReadSraTableFunction::AccessionFromPath(const std::string &path) {
-	std::string name = path.substr(path.find_last_of("/\\") == std::string::npos ? 0 : path.find_last_of("/\\") + 1);
-	for (const char *ext : {".sralite", ".sra"}) {
-		std::string e = ext;
-		if (name.size() > e.size() && name.compare(name.size() - e.size(), e.size(), e) == 0) {
-			return name.substr(0, name.size() - e.size());
-		}
+	std::vector<std::string> locations;
+	for (const auto &r : bind_data->Cast<SraScanData>().runs) {
+		locations.push_back(r.location);
 	}
-	return name;
+	return EstimateFileScanCardinality(locations, 100);
 }
 
-TableFunction ReadSraTableFunction::GetFunction() {
-	TableFunction tf(FUNCTION, {LogicalType::ANY}, Execute, Bind, InitGlobal, InitLocal);
+TableFunction MakeScan(const char *name, table_function_bind_t bind) {
+	TableFunction tf(name, {LogicalType::ANY}, Execute, bind, InitGlobal, InitLocal);
 	AddNamedParameter(tf, "split", LogicalType::VARCHAR);
 	AddNamedParameter(tf, "include_technical", LogicalType::BOOLEAN);
 	AddNamedParameter(tf, "include_filepath", LogicalType::BOOLEAN);
@@ -384,7 +496,41 @@ TableFunction ReadSraTableFunction::GetFunction() {
 	return tf;
 }
 
+} // namespace
+
+std::string ReadSraTableFunction::AccessionFromPath(const std::string &path) {
+	auto slash = path.find_last_of("/\\");
+	std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+	for (const std::string ext : {".sralite", ".sra"}) {
+		if (name.size() > ext.size() && name.compare(name.size() - ext.size(), ext.size(), ext) == 0) {
+			return name.substr(0, name.size() - ext.size());
+		}
+	}
+	return name;
+}
+
+TableFunction ReadSraTableFunction::GetFunction() {
+	return MakeScan("read_sra", ReadSraBind);
+}
+
 void ReadSraTableFunction::Register(ExtensionLoader &loader) {
+	loader.RegisterFunction(GetFunction());
+}
+
+std::string ReadNcbiSraSequencesTableFunction::RunUrl(const std::string &accession) {
+	const char *env = std::getenv("MIINT_SRA_RUN_URL_TEMPLATE");
+	std::string url = env && *env ? env : DEFAULT_RUN_URL_TEMPLATE;
+	for (size_t at; (at = url.find("{acc}")) != std::string::npos;) {
+		url.replace(at, 5, accession);
+	}
+	return url;
+}
+
+TableFunction ReadNcbiSraSequencesTableFunction::GetFunction() {
+	return MakeScan("read_ncbi_sra_sequences", ReadNcbiBind);
+}
+
+void ReadNcbiSraSequencesTableFunction::Register(ExtensionLoader &loader) {
 	loader.RegisterFunction(GetFunction());
 }
 

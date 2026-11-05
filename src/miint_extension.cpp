@@ -362,6 +362,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ReadSequencesSamTableFunction::Register(loader);
 	ReadSequencesSFFTableFunction::Register(loader);
 	ReadSraTableFunction::Register(loader);
+	ReadNcbiSraSequencesTableFunction::Register(loader);
 #ifdef MIINT_HAS_HDF5
 	ReadBIOMTableFunction::Register(loader);
 #endif

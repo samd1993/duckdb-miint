@@ -565,6 +565,7 @@ list(
   test/cpp/test_SraArchive.cpp
   test/cpp/test_SraCodecs.cpp
   test/cpp/test_SraColumn.cpp
+  test/cpp/test_SraPrefetch.cpp
   test/cpp/test_SraRun.cpp
   test/cpp/test_SraSpots.cpp
   test/cpp/test_taxdump_archive.cpp
