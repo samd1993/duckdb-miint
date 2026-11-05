@@ -1562,6 +1562,12 @@ this repository, from a throwaway conda environment; nothing here packages or ru
 it. `data/sra/README.md` and each `data/sra/oracle/<RUN>/README.md` record the
 exact commands.
 
+The committed fixtures in `data/sra/` are public SRA runs, copied unchanged from
+NCBI's `sra-pub-run-odp` bucket. NCBI distributes SRA data without restriction,
+but the submitters may hold rights in it (NCBI's data policies:
+https://www.ncbi.nlm.nih.gov/home/about/policies/). `data/sra/README.md` lists
+each run with its source.
+
 - Repositories: https://github.com/ncbi/sra-tools, https://github.com/ncbi/ncbi-vdb
 - Version that generated the oracles: sra-tools 3.4.1 (bioconda build
   `h5fa12a8_1`, with ncbi-vdb 3.4.1)

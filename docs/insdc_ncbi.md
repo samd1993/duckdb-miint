@@ -1,6 +1,6 @@
 # Working with NCBI
 
-MIINT provides integration with NCBI's GenBank and RefSeq.
+MIINT provides integration with NCBI's GenBank and RefSeq, the Sequence Read Archive (SRA) and the NCBI taxonomy.
 
 ## Table of contents
 
@@ -8,6 +8,7 @@ MIINT provides integration with NCBI's GenBank and RefSeq.
 - [Read metadata](#read-metadata) - Fetch record metadata from GenBank and RefSeq by accession.
 - [Read sequences](#read-sequences) - Fetch sequence data from GenBank and RefSeq by accession.
 - [Read annotations](#read-annotations) - Fetch annotation data from GenBank and RefSeq by accession.
+- [Read SRA runs](#read-sra-runs) - Read sequencing runs from NCBI's SRA cloud copy by run accession, as fasterq-dump would write them.
 - [Taxonomy](#taxonomy) - Obtain and use the NCBI taxonomy: the full tree (bulk/offline), online lineage lookups, and offline lineage collapse.
   - [Read the taxonomy tree (`read_ncbi_taxdump`)](#read-the-taxonomy-tree-read_ncbi_taxdump) - Bulk/offline: download + cache the taxonomy tree.
   - [Remap retired taxids (`read_ncbi_taxdump_merged`)](#remap-retired-taxids-read_ncbi_taxdump_merged) - The retired→current taxid map.
@@ -252,6 +253,53 @@ COPY (
 - Complex feature locations (join, complement) emit a warning and use outer bounds only
 - The `phase` column is set from the `codon_start` qualifier for CDS features
 - Source is detected from accession prefix: NC_/NM_/NP_ -> 'RefSeq', others -> 'GenBank' or 'NCBI'
+
+## Read SRA runs
+
+Read sequencing runs from the SRA's public copy on AWS (the `sra-pub-run-odp` bucket of the [NIH STRIDES program](https://registry.opendata.aws/ncbi-sra/)) with `read_ncbi_sra_sequences`. Each run is read in place by many concurrent byte-range requests and decoded as it arrives, with no download step and no SRA Toolkit. The rows are those [`read_sra`](reading.md#sra) returns for the same `.sra` file, and so exactly what `fasterq-dump` writes for the run.
+
+**Requirements:**
+- Requires the `httpfs` extension (loaded automatically)
+- Network access to `sra-pub-run-odp.s3.amazonaws.com`. Requests are anonymous HTTPS: no AWS account or credentials are needed, and an S3 secret you have configured is not used.
+
+**Parameters:**
+- `accession` (VARCHAR or VARCHAR[]): Run accession(s): `SRR`, `ERR` or `DRR` followed by digits. Surrounding whitespace is ignored, and a run named twice is read once. A study, sample or experiment accession is an error; list its runs with `read_ena(...)` first.
+- `split`, `include_technical`: as for [`read_sra`](reading.md#sra) (`'split_3'` by default, or `'spot'`)
+- `include_filepath` (BOOLEAN, optional, default false): Add a `filepath` column with the URL each run was read from
+
+**Output schema:** `read_sra`'s columns, with `run_accession` (VARCHAR) after `qual2`, where `read_ena_sequences` puts it:
+- `sequence_index`, `read_id`, `comment`, `sequence1`, `sequence2`, `qual1`, `qual2`: as in [`read_sra`](reading.md#sra)
+- `run_accession` (VARCHAR): The run the row came from
+- `read_number` (UTINYINT, `split => 'spot'` only), `filepath` (VARCHAR, optional): as in `read_sra`
+
+`sample_accession` and `experiment_accession`, which `read_ena_sequences` also returns, are not available here: the run's archive does not record them.
+
+**Behavior:**
+- Runs are returned in the order given, spots in order, decoded in parallel
+- A run that cannot be fetched (absent from the bucket, or a network failure) fails the query when it is the only run asked for. With several, it is skipped with a warning in `miint_warnings()`, and the query fails only if every run fails, as in `read_ena_sequences`
+- A run of a kind miint does not read (cSRA, SRA Lite, PacBio or Nanopore consensus databases; see [`read_sra`](reading.md#sra)) or a damaged run always fails the query, naming the run
+- Throughput comes from concurrency: up to 32 range requests in flight per run, with read-ahead cached in memory (about 72 MB per DuckDB thread, at most 1 GiB, outside DuckDB's `memory_limit`). On a campus network a 1.35 GB run (20 million read pairs) was read into a table in about 28 s, close to a bare parallel download of the same file, and several times faster than downloading it and running `fasterq-dump`
+- A `LIMIT` or `max_execution_time` stops the scan, and the requests queued for it are dropped; requests already in flight finish first, so a `LIMIT` on a large run still fetches the first work units (about 100 MB on that run)
+
+**Examples:**
+```sql
+-- A run, paired
+SELECT * FROM read_ncbi_sra_sequences('SRR4424282');
+
+-- Several runs, one read per row
+SELECT run_accession, read_id, read_number, sequence1
+FROM read_ncbi_sra_sequences(['SRR4424282', 'DRR501055'], split => 'spot');
+
+-- A first look at a large run
+SELECT * FROM read_ncbi_sra_sequences('SRR7761321') LIMIT 100;
+
+-- Keep a run as Parquet
+COPY (SELECT * FROM read_ncbi_sra_sequences('SRR7761321')) TO 'SRR7761321.parquet';
+```
+
+**Notes:**
+- `read_ena_sequences` reads the same runs as FASTQ from ENA. It also returns sample and experiment accessions and resolves studies to their runs. `read_ncbi_sra_sequences` returns `fasterq-dump`'s output, and is often much faster because it reads the smaller `.sra` object with many requests at once.
+- The `MIINT_SRA_RUN_URL_TEMPLATE` environment variable replaces the bucket URL, with `{acc}` standing for the run (default `https://sra-pub-run-odp.s3.amazonaws.com/sra/{acc}/{acc}`); the test suite uses it to serve fixtures locally.
 
 ## Taxonomy
 

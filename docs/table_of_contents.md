@@ -63,13 +63,13 @@ Two constraints come with it:
 
 ## Reading & writing
 
-- [Reading files](reading.md) - File formats with read support in MIINT (FASTA/FASTQ, SAM/BAM, PAF, GFA, SFF, BIOM, mzML/mzXML, GFF, jplace, Newick), and myloasm assembly output.
+- [Reading files](reading.md) - File formats with read support in MIINT (FASTA/FASTQ, SAM/BAM, PAF, GFA, SFF, SRA, BIOM, mzML/mzXML, GFF, jplace, Newick), and myloasm assembly output.
 - [Writing files](writing.md) - File formats with write support in MIINT.
 
 ## Public data repositories
 
 - [EBI/ENA](insdc_ena.md) - Interaction with EBI/ENA including submission and fetching of data.
-- [NCBI](insdc_ncbi.md) - Interaction with NCBI including fetching of data and the NCBI taxonomy (tree, name classes, lineages, retired/deleted-taxid handling).
+- [NCBI](insdc_ncbi.md) - Interaction with NCBI including fetching of data, reading SRA runs from NCBI's cloud copy, and the NCBI taxonomy (tree, name classes, lineages, retired/deleted-taxid handling).
 
 ## Alignment
 

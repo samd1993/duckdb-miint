@@ -242,6 +242,28 @@ if [ "${MIINT_ENA_LIVE_TEST:-0}" = "1" ]; then
     fi
 fi
 
+# Live read_ncbi_sra_sequences tests, opt-in: `MIINT_SRA_LIVE_TEST=1 bash run_tests.sh`. They
+# read runs from NCBI's bucket, so they run under with_live_sra: without the template that
+# points read_ncbi_sra_sequences at the test server, and with SRA_AWS_AVAILABLE, which is set
+# nowhere else. With the opt-in set, the probe still skips them when the bucket does not answer.
+unset SRA_AWS_AVAILABLE
+SRA_LIVE=0
+with_live_sra() {
+    (
+        unset MIINT_SRA_RUN_URL_TEMPLATE
+        export SRA_AWS_AVAILABLE=1
+        "$@"
+    )
+}
+if [ "${MIINT_SRA_LIVE_TEST:-0}" = "1" ]; then
+    if curl -sSf --max-time 10 -o /dev/null -r 0-7 \
+            "https://sra-pub-run-odp.s3.amazonaws.com/sra/SRR34459993/SRR34459993" 2>/dev/null; then
+        SRA_LIVE=1
+    else
+        echo "Warning: MIINT_SRA_LIVE_TEST=1, but NCBI's SRA bucket did not answer; the live SRA tests will skip"
+    fi
+fi
+
 # NCBI network reachability, for the live read_ncbi* tests: they use both E-utilities and
 # the Datasets API, so both must answer.
 if curl -sSf --max-time 5 -o /dev/null "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/einfo.fcgi" 2>/dev/null &&
@@ -748,7 +770,7 @@ fi
 # Which skips are allowed: docs/testing.md, "Guards and skipped tests". A skip does not
 # change unittest's exit status, so a disallowed one, such as a skip for the mock server's
 # URL that this script exports, is caught here.
-HTTPFS_ALLOWED_SKIPS='ENA_AVAILABLE|NCBI_AVAILABLE|BLAST_LIVE_AVAILABLE|MIINT_TAXDUMP_REMOTE|ENA_WEBIN_TEST_(USER|PASSWORD|AVAILABLE)|ASPERA_AVAILABLE|HDF5_AVAILABLE'
+HTTPFS_ALLOWED_SKIPS='ENA_AVAILABLE|SRA_AWS_AVAILABLE|NCBI_AVAILABLE|BLAST_LIVE_AVAILABLE|MIINT_TAXDUMP_REMOTE|ENA_WEBIN_TEST_(USER|PASSWORD|AVAILABLE)|ASPERA_AVAILABLE|HDF5_AVAILABLE'
 
 # run_httpfs_files <comma-separated files> <log>: run them as the httpfs pass does, and
 # exit the script when one fails or skips for a reason this run should have provided.
@@ -798,6 +820,12 @@ run_httpfs_files "$HTTPFS_TESTS" "$PWD/build/release/httpfs_tests.log"
 if [ "$ENA_LIVE" = "1" ]; then
     ENA_LIVE_TESTS=$(grep -rl --include='*.test' '^require-env ENA_AVAILABLE' test/sql | paste -sd, -)
     with_live_ena run_httpfs_files "$ENA_LIVE_TESTS" "$PWD/build/release/httpfs_ena_live_tests.log" || exit 1
+fi
+
+# The live SRA tests, which the pass above skipped (see MIINT_SRA_LIVE_TEST above).
+if [ "$SRA_LIVE" = "1" ]; then
+    SRA_LIVE_TESTS=$(grep -rl --include='*.test' '^require-env SRA_AWS_AVAILABLE' test/sql | paste -sd, -)
+    with_live_sra run_httpfs_files "$SRA_LIVE_TESTS" "$PWD/build/release/httpfs_sra_live_tests.log" || exit 1
 fi
 
 # Run shell script tests. A script that loads httpfs runs with the httpfs pass's HOME

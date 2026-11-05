@@ -35,6 +35,7 @@ FROM read_sra(['data/sra/SRR32151205.sra', 'data/sra/SRR34459993.sra', 'data/sra
 
 query II
 SELECT count(*), count(*) FILTER (WHERE r.read_id IS DISTINCT FROM l.read_id OR r.sequence_index IS DISTINCT FROM l.sequence_index
+                                  OR r.comment IS DISTINCT FROM l.comment
                                   OR r.sequence1 IS DISTINCT FROM l.sequence1 OR r.sequence2 IS DISTINCT FROM l.sequence2
                                   OR r.qual1 IS DISTINCT FROM l.qual1 OR r.qual2 IS DISTINCT FROM l.qual2)
 FROM remote r FULL JOIN local l USING (pos);

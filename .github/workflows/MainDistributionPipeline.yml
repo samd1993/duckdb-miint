@@ -233,6 +233,7 @@ jobs:
         shell: bash -el {0}
         env:
           MIINT_ENA_LIVE_TEST: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          MIINT_SRA_LIVE_TEST: ${{ github.event_name == 'schedule' && '1' || '0' }}
           MIINT_LOAD_RACE_TEST: ${{ github.event_name == 'schedule' && '1' || '0' }}
           MIINT_LOAD_RACE_PROCS: '100'
         run: bash run_tests.sh
