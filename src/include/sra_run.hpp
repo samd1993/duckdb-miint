@@ -76,6 +76,9 @@ public:
 	// Reads only a spot's READ_LEN and READ_TYPE (row_id, read_len, read_type, has_read_type):
 	// what RowsOfSpot needs, without decoding its bases, qualities or name.
 	void ReadLayout(int64_t row_id, Spot &out);
+	// Hints to the byte source that rows [first, end) will be read soon: on S3 the blocks of a
+	// work unit are fetched before a thread reaches them.
+	void PrefetchRows(int64_t first, int64_t end);
 
 private:
 	struct Impl;

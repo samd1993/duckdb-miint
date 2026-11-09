@@ -191,7 +191,8 @@ TEST_CASE("EveryRunFailed holds only when every run of the scan was skipped", "[
 
 TEST_CASE("BuildEveryRunFailedMessage names each run and the first failure", "[ena_md5]") {
 	// The order is the order the runs failed in, which parallel workers decide.
-	CHECK(miint::BuildEveryRunFailedMessage({"ERR2", "ERR1"}, "read_ena_sequences: ascp exited with code 1") ==
+	CHECK(miint::BuildEveryRunFailedMessage("read_ena_sequences", {"ERR2", "ERR1"},
+	                                        "read_ena_sequences: ascp exited with code 1") ==
 	      "read_ena_sequences: every run failed (2): ERR2 ERR1; first error: read_ena_sequences: ascp exited with "
 	      "code 1");
 }

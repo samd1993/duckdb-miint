@@ -1,0 +1,107 @@
+# name: test/sql/read_ncbi_sra_sequences_input_errors.test
+# description: read_ncbi_sra_sequences checks its arguments when the query binds, before any request
+# group: [sql]
+
+require miint
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences(NULL);
+----
+read_ncbi_sra_sequences: the accession cannot be NULL
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences([]::VARCHAR[]);
+----
+read_ncbi_sra_sequences: at least one accession must be provided
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences(['SRR4424282', NULL]);
+----
+read_ncbi_sra_sequences: the accession cannot be NULL
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences('  ');
+----
+read_ncbi_sra_sequences: the accession cannot be empty
+
+# Only runs are fetched: a study, experiment, sample or project names many runs, which NCBI's
+# bucket does not resolve. The message says where to find the runs.
+statement error
+SELECT * FROM read_ncbi_sra_sequences('SRP544076');
+----
+read_ncbi_sra_sequences: 'SRP544076' is not a run accession (SRR, ERR or DRR followed by digits); read_ena('SRP544076') lists its runs
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences(['SRR4424282', 'PRJNA1183864']);
+----
+read_ncbi_sra_sequences: 'PRJNA1183864' is not a run accession
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences('SRR4424282', split := 'concatenated');
+----
+read_ncbi_sra_sequences: split must be 'split_3' or 'spot', not 'concatenated'
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences('SRR4424282', include_technical := true);
+----
+read_ncbi_sra_sequences: include_technical requires split => 'spot'
+
+# Binding makes no request: no httpfs is needed to plan the query.
+statement ok
+EXPLAIN SELECT * FROM read_ncbi_sra_sequences(['SRR4424282', ' DRR274142 ']);
+
+# The read_fastx columns, then run_accession where read_ena_sequences puts it.
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_ncbi_sra_sequences('SRR4424282'));
+----
+sequence_index	BIGINT
+read_id	VARCHAR
+comment	VARCHAR
+sequence1	VARCHAR
+sequence2	VARCHAR
+qual1	UTINYINT[]
+qual2	UTINYINT[]
+run_accession	VARCHAR
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_ncbi_sra_sequences('SRR4424282', split := 'spot', include_filepath := true));
+----
+sequence_index	BIGINT
+read_id	VARCHAR
+comment	VARCHAR
+sequence1	VARCHAR
+sequence2	VARCHAR
+qual1	UTINYINT[]
+qual2	UTINYINT[]
+run_accession	VARCHAR
+read_number	UTINYINT
+filepath	VARCHAR
+
+# ---------------------------------------------------------------------------------------------
+# The run URL setting
+
+# One template serves every run, so a template without {acc} would read the same object for all of
+# them: it is refused when the query binds.
+statement ok
+SET miint_sra_run_url = 'https://mirror.example/sra/fixed.sra';
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences('SRR4424282');
+----
+miint_sra_run_url must contain {acc}
+
+statement ok
+SET miint_sra_run_url = '';
+
+statement error
+SELECT * FROM read_ncbi_sra_sequences('SRR4424282');
+----
+miint_sra_run_url cannot be empty
+
+statement ok
+RESET miint_sra_run_url;
+
+query I
+SELECT current_setting('miint_sra_run_url');
+----
+https://sra-pub-run-odp.s3.amazonaws.com/sra/{acc}/{acc}

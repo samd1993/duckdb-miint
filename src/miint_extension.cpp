@@ -372,6 +372,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                                 "Where read_gtdb_metadata and read_gtdb_qc_failed keep the releases they "
 	                                 "download. Empty (the default) means ${XDG_CACHE_HOME:-~/.cache}/miint/gtdb.",
 	                                 LogicalType::VARCHAR, Value(""));
+	ena_db_config.AddExtensionOption("miint_sra_run_url",
+	                                 "URL of a run's .sra object, which read_ncbi_sra_sequences reads; {acc} stands "
+	                                 "for the run accession.",
+	                                 LogicalType::VARCHAR, Value(ReadNcbiSraSequencesTableFunction::DEFAULT_RUN_URL));
 
 	// Spots per read_sra work unit: the unit of parallel decoding and of output batches. Tests
 	// lower it to spread a small fixture over several units and threads.
@@ -392,6 +396,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	ReadSequencesSamTableFunction::Register(loader);
 	ReadSequencesSFFTableFunction::Register(loader);
 	ReadSraTableFunction::Register(loader);
+	ReadNcbiSraSequencesTableFunction::Register(loader);
 #ifdef MIINT_HAS_HDF5
 	ReadBIOMTableFunction::Register(loader);
 #endif

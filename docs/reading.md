@@ -718,7 +718,7 @@ WHERE list_avg(qual1) >= 30;
 
 ### SRA
 
-Read NCBI SRA archives (`.sra` files) with `read_sra`. The SRA stores a run as *spots*: one spot is one sequenced fragment, with all its reads (both mates of a pair, plus any barcode or index reads). The rows are exactly what `fasterq-dump` writes for the same file: the same reads, bases, qualities, spot names and order. Rendering them back to FASTQ gives `fasterq-dump`'s files byte for byte. miint decodes the archive itself; it does not use or need the SRA Toolkit.
+Read NCBI SRA archives (`.sra` files) with `read_sra`. The SRA stores a run as *spots*: one spot is one sequenced fragment, with all its reads (both mates of a pair, plus any barcode or index reads). The rows are exactly what `fasterq-dump` writes for the same file: the same reads, bases, qualities, spot names and order. Rendering them back to FASTQ gives `fasterq-dump`'s files byte for byte. miint decodes the archive itself; it does not use or need the SRA Toolkit. To read runs straight from NCBI's cloud copy by accession, use [`read_ncbi_sra_sequences`](insdc_ncbi.md#read-sra-runs).
 
 **Basic example:**
 

@@ -1,0 +1,36 @@
+# name: test/sql/read_ncbi_sra_sequences_live.test
+# description: read_ncbi_sra_sequences reads runs from NCBI's own bucket (opt-in: MIINT_SRA_LIVE_TEST=1)
+# group: [sql]
+
+require httpfs
+
+require miint
+
+# run_tests.sh sets this only under MIINT_SRA_LIVE_TEST=1, when the bucket answers, and runs this
+# file without the template that points read_ncbi_sra_sequences at its test server.
+require-env SRA_AWS_AVAILABLE
+
+# The mock test serves the committed fixtures by byte range; this one checks the real service
+# (https://sra-pub-run-odp.s3.amazonaws.com) serves the same objects, read anonymously. The
+# fixtures were downloaded from it, so a run read live must equal the committed copy, names
+# included.
+query II
+SELECT count(*), count(*) FILTER (WHERE r.read_id IS DISTINCT FROM l.read_id OR r.comment IS DISTINCT FROM l.comment
+                                  OR r.sequence1 IS DISTINCT FROM l.sequence1 OR r.sequence2 IS DISTINCT FROM l.sequence2
+                                  OR r.qual1 IS DISTINCT FROM l.qual1 OR r.qual2 IS DISTINCT FROM l.qual2)
+FROM (SELECT row_number() OVER () AS pos, * FROM read_ncbi_sra_sequences(['SRR34459993', 'SRR4424282'])) r
+FULL JOIN (SELECT row_number() OVER () AS pos, * FROM read_sra(['data/sra/SRR34459993.sra', 'data/sra/SRR4424282.sra'])) l
+USING (pos);
+----
+42	0
+
+query I
+SELECT DISTINCT filepath FROM read_ncbi_sra_sequences('SRR34459993', include_filepath := true);
+----
+https://sra-pub-run-odp.s3.amazonaws.com/sra/SRR34459993/SRR34459993
+
+# A run the bucket does not hold fails the query when it is the only run asked for.
+statement error
+SELECT count(*) FROM read_ncbi_sra_sequences('SRR999999999');
+----
+read_ncbi_sra_sequences: SRR999999999: HTTP HEAD error

@@ -36,10 +36,11 @@ inline bool EveryRunFailed(size_t skipped_runs, size_t total_runs) {
 }
 
 // `accessions` in the order the runs failed; `first_error` is the first failure
-// recorded, which with parallel workers need not be the first run's.
-inline std::string BuildEveryRunFailedMessage(const std::vector<std::string> &accessions,
+// recorded, which with parallel workers need not be the first run's. `function`
+// names the table function.
+inline std::string BuildEveryRunFailedMessage(const std::string &function, const std::vector<std::string> &accessions,
                                               const std::string &first_error) {
-	std::string msg = "read_ena_sequences: every run failed (" + std::to_string(accessions.size()) + "):";
+	std::string msg = function + ": every run failed (" + std::to_string(accessions.size()) + "):";
 	for (const auto &acc : accessions) {
 		msg += " " + acc;
 	}

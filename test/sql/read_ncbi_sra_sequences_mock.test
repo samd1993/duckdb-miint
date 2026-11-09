@@ -1,0 +1,132 @@
+# name: test/sql/read_ncbi_sra_sequences_mock.test
+# description: read_ncbi_sra_sequences reads runs over HTTP range requests, served from data/sra by the test server
+# group: [sql]
+
+require httpfs
+
+require miint
+
+# run_tests.sh's range-serving test server serves the committed fixtures (data/sra/README.md) as
+# NCBI's bucket serves runs: one object per run, read by byte ranges. A run the server lacks answers
+# 404, as a run missing from the bucket does.
+require-env MIINT_HTTPS_TEST_URL
+
+statement ok
+SET miint_sra_run_url = '{MIINT_HTTPS_TEST_URL}/sra/{acc}.sra';
+
+# ---------------------------------------------------------------------------------------------
+# Over HTTP the reader must return exactly what it returns for the same files on disk, which
+# test/sql/read_sra.test holds to fasterq-dump's output.
+
+statement ok
+CREATE TABLE remote AS
+SELECT row_number() OVER () AS pos, *
+FROM read_ncbi_sra_sequences(['SRR32151205', 'SRR34459993', 'ERR16653849', 'ERR5009897', 'SRR4424282',
+                              'SRR6016450', 'DRR501055', 'SRR4439672', 'SRR24770212', 'ERR8523629',
+                              'SRR30810369', 'SRR30938008', 'ERR932865', 'ERR1160027', 'SRR14704581',
+                              'SRR36240868', 'DRR880686', 'SRR37135232']);
+
+statement ok
+CREATE TABLE local AS
+SELECT row_number() OVER () AS pos, *
+FROM read_sra(['data/sra/SRR32151205.sra', 'data/sra/SRR34459993.sra', 'data/sra/ERR16653849.sra',
+               'data/sra/ERR5009897.sra', 'data/sra/SRR4424282.sra', 'data/sra/SRR6016450.sra',
+               'data/sra/DRR501055.sra', 'data/sra/SRR4439672.sra', 'data/sra/SRR24770212.sra',
+               'data/sra/ERR8523629.sra', 'data/sra/SRR30810369.sra', 'data/sra/SRR30938008.sra',
+               'data/sra/ERR932865.sra', 'data/sra/ERR1160027.sra', 'data/sra/SRR14704581.sra',
+               'data/sra/SRR36240868.sra', 'data/sra/DRR880686.sra', 'data/sra/SRR37135232.sra']);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE r.read_id IS DISTINCT FROM l.read_id OR r.sequence_index IS DISTINCT FROM l.sequence_index
+                                  OR r.comment IS DISTINCT FROM l.comment
+                                  OR r.sequence1 IS DISTINCT FROM l.sequence1 OR r.sequence2 IS DISTINCT FROM l.sequence2
+                                  OR r.qual1 IS DISTINCT FROM l.qual1 OR r.qual2 IS DISTINCT FROM l.qual2
+                                  OR r.run_accession IS DISTINCT FROM l.run_accession)
+FROM remote r FULL JOIN local l USING (pos);
+----
+8865	0
+
+# run_accession names the run each row came from, as in read_ena_sequences.
+query II
+SELECT count(DISTINCT run_accession), count(*) FILTER (WHERE run_accession <> split_part(read_id, '.', 1)) FROM remote;
+----
+18	0
+
+query I
+SELECT DISTINCT regexp_extract(filepath, '/sra/[^/]*$') FROM read_ncbi_sra_sequences('SRR4424282', include_filepath := true);
+----
+/sra/SRR4424282.sra
+
+# Spot mode over HTTP matches spot mode on disk.
+query I
+SELECT count(*) FROM (
+    SELECT * FROM read_ncbi_sra_sequences(['SRR24770212', 'SRR6016450'], split := 'spot')
+    EXCEPT ALL
+    SELECT * FROM read_sra(['data/sra/SRR24770212.sra', 'data/sra/SRR6016450.sra'], split := 'spot'));
+----
+0
+
+# Parallel decoding in small units keeps the order over HTTP too.
+statement ok
+SET threads = 8;
+
+statement ok
+SET miint_sra_spots_per_unit = 7;
+
+statement ok
+CREATE TABLE remote_small_units AS
+SELECT read_id
+FROM read_ncbi_sra_sequences(['SRR32151205', 'SRR34459993', 'ERR16653849', 'ERR5009897', 'SRR4424282',
+                              'SRR6016450', 'DRR501055', 'SRR4439672', 'SRR24770212', 'ERR8523629',
+                              'SRR30810369', 'SRR30938008', 'ERR932865', 'ERR1160027', 'SRR14704581',
+                              'SRR36240868', 'DRR880686', 'SRR37135232']);
+
+statement ok
+RESET miint_sra_spots_per_unit;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE r.read_id IS DISTINCT FROM s.read_id)
+FROM remote r FULL JOIN (SELECT rowid + 1 AS pos, read_id FROM remote_small_units) s USING (pos);
+----
+8865	0
+
+# A run named twice is read once, as read_ena_sequences resolves each accession once.
+query I
+SELECT count(*) FROM read_ncbi_sra_sequences(['SRR4424282', 'SRR4424282']);
+----
+3
+
+# ---------------------------------------------------------------------------------------------
+# Runs that cannot be read
+
+# One run of several missing from the bucket is skipped with a warning; the others are read.
+# Exactly one warning: units are claimed by several threads, but a run is opened, and skipped,
+# once. No earlier statement in this file skips a run.
+query I
+SELECT count(*) FROM read_ncbi_sra_sequences(['SRR4424282', 'SRR999999999']);
+----
+3
+
+query I
+SELECT count(*) FROM miint_warnings()
+WHERE message LIKE 'read_ncbi_sra_sequences: skipped run ''SRR999999999'': %404%';
+----
+1
+
+# A single run that cannot be read fails the query.
+statement error
+SELECT count(*) FROM read_ncbi_sra_sequences('SRR999999999');
+----
+read_ncbi_sra_sequences: SRR999999999:
+
+statement error
+SELECT count(*) FROM read_ncbi_sra_sequences(['SRR999999998', 'SRR999999999']);
+----
+read_ncbi_sra_sequences: every run failed (2): SRR999999998 SRR999999999
+
+# A run that is not supported is refused even among others: skipping it would hide that the
+# rows asked for are not all there for a reason no retry changes.
+statement error
+SELECT count(*) FROM read_ncbi_sra_sequences(['SRR4424282', 'SRR26779001']);
+----
+read_ncbi_sra_sequences: SRR26779001: cSRA (aligned reads
