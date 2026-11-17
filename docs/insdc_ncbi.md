@@ -340,6 +340,7 @@ COPY (SELECT * FROM read_ncbi_sra_sequences('SRR7761321')) TO 'SRR7761321.parque
 
 **Notes:**
 - `read_ena_sequences` reads the same runs as FASTQ from ENA. It also returns sample and experiment accessions and resolves studies to their runs. `read_ncbi_sra_sequences` returns `fasterq-dump`'s output, and is often faster because it reads the smaller `.sra` object with many requests at once.
+- Counts and layouts can differ from what ENA's metadata says. For some paired runs submitted to ENA, ENA's `read_count` counts reads rather than spots, twice the number of rows here (ERR13302205: 216,058 at ENA, 108,029 spots). A run ENA labels `PAIRED` can hold mostly or only single-read spots, which `'split_3'` returns with `sequence2` NULL, so a filter on `sequence2 IS NOT NULL` can leave few or no rows.
 - The `miint_sra_run_url` setting replaces the bucket URL, with `{acc}` standing for the run (default `https://sra-pub-run-odp.s3.amazonaws.com/sra/{acc}/{acc}`), for example to read from a mirror: `SET miint_sra_run_url = 'https://mirror.example/sra/{acc}.sra'`. A URL without `{acc}` is refused, since every run would read the same object.
 
 ## Taxonomy
